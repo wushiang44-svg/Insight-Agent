@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.coverage
+.env
+backend/.venv/
+backend/data/*.sqlite3*
+backend/*.egg-info/
+node_modules/
+frontend/dist/

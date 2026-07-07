@@ -1,0 +1,294 @@
+:root {
+  --text: #3a3a3a;
+  --text-h: #111111;
+  --bg: #f7f7f9;
+  --card-bg: #ffffff;
+  --border: #e2e2e6;
+  --accent: #ff4500;
+  --muted: #7a7a85;
+  --sans: system-ui, "Segoe UI", Roboto, sans-serif;
+  font: 16px/1.5 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2 {
+  color: var(--text-h);
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+h1 {
+  font-size: 26px;
+}
+
+h2 {
+  font-size: 18px;
+}
+
+a {
+  color: var(--accent);
+}
+
+.app-header {
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 24px;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 18px;
+  text-decoration: none;
+  color: var(--text-h);
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: #c0392b;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 480px;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+.form input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.form-row {
+  display: flex;
+  gap: 14px;
+}
+
+.form-row label {
+  flex: 1;
+}
+
+button {
+  padding: 9px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  width: fit-content;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button-link {
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  vertical-align: top;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status-planning,
+.status-searching,
+.status-summarizing {
+  background: #fff4e5;
+  color: #b45309;
+}
+
+.status-completed {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.status-failed {
+  background: #fdecea;
+  color: #c0392b;
+}
+
+.status-stopped {
+  background: #eceef1;
+  color: #55606e;
+}
+
+.run-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.run-summary .actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.trace-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.trace-iteration-header {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-h);
+}
+
+.trace-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trace-step {
+  display: flex;
+  gap: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.trace-step-icon {
+  font-size: 18px;
+}
+
+.trace-step-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-h);
+}
+
+.trace-step-message {
+  font-size: 14px;
+}
+
+.trace-step-payload {
+  margin-top: 6px;
+  font-size: 12px;
+  background: #f4f4f6;
+  border-radius: 6px;
+  padding: 8px;
+  overflow-x: auto;
+}
+
+.quote-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 13px;
+}
+
+.sentiment-breakdown {
+  display: flex;
+  gap: 10px;
+}
+
+.sentiment-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sentiment-negative {
+  background: #fdecea;
+  color: #c0392b;
+}
+
+.sentiment-positive {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.sentiment-neutral {
+  background: #eceef1;
+  color: #55606e;
+}
+
+.summary-markdown {
+  white-space: pre-wrap;
+  font-family: var(--sans);
+  font-size: 14px;
+}
