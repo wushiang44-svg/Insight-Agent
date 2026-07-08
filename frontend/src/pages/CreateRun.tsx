@@ -60,7 +60,7 @@ export function CreateRun() {
       const text = await file.text();
       const parsed = JSON.parse(text);
       if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "object" || item === null)) {
-        throw new Error("JSON 文件必须是一个对象数组");
+        throw new Error("The JSON file must be an array of objects");
       }
       setUploadedItems(parsed as Record<string, unknown>[]);
       setUploadedFileName(file.name);
@@ -75,11 +75,11 @@ export function CreateRun() {
     event.preventDefault();
     setError(null);
     if (!productCategory.trim()) {
-      setError("请填写产品类目");
+      setError("Please enter a product category");
       return;
     }
     if (dataSource === "json_upload" && uploadedItems.length === 0) {
-      setError("JSON 上传模式需要先选择一个 JSON 文件");
+      setError("JSON upload mode requires selecting a JSON file first");
       return;
     }
     setSubmitting(true);
@@ -105,23 +105,24 @@ export function CreateRun() {
 
   return (
     <div className="page">
-      <h1>新建一次调研</h1>
+      <h1>New Research Run</h1>
       <p className="muted">
-        输入你要调研的产品类目，Agent 会持续搜索、筛选、分析相关帖子和评论，
-        并在收集到足够信息后生成一份商家可读的产品优化报告。
+        Enter the product category you want to research. The agent will keep searching, filtering, and
+        analyzing relevant posts and comments, then generate a merchant-readable product improvement report
+        once it has collected enough information.
       </p>
       <form className="card form" onSubmit={handleSubmit}>
         <label>
-          产品类目 *
+          Product category *
           <input
             value={productCategory}
             onChange={(event) => setProductCategory(event.target.value)}
-            placeholder="例如：wireless earbuds"
+            placeholder="e.g. wireless earbuds"
           />
         </label>
 
         <div>
-          <div style={{ marginBottom: 6, fontSize: 14, color: "var(--text-h)" }}>数据来源</div>
+          <div style={{ marginBottom: 6, fontSize: 14, color: "var(--text-h)" }}>Data source</div>
           <label style={{ flexDirection: "row", alignItems: "center", gap: 6, display: "flex" }}>
             <input
               type="radio"
@@ -129,7 +130,7 @@ export function CreateRun() {
               checked={dataSource === "reddit_api"}
               onChange={() => setDataSource("reddit_api")}
             />
-            Reddit API（实时抓取）
+            Reddit API (live search)
           </label>
           <label style={{ flexDirection: "row", alignItems: "center", gap: 6, display: "flex", marginTop: 4 }}>
             <input
@@ -138,30 +139,31 @@ export function CreateRun() {
               checked={dataSource === "json_upload"}
               onChange={() => setDataSource("json_upload")}
             />
-            JSON 上传（离线 / 演示数据）
+            JSON upload (offline / demo data)
           </label>
         </div>
 
         {showRedditWarning && (
           <p className="error">
-            未检测到 Reddit API 凭证——Reddit Data API 目前需要走审批流程，可能暂时申请不到。
-            建议改用「JSON 上传」模式，先用准备好的示例数据跑通完整流程。
+            No Reddit API credentials detected — the Reddit Data API currently requires an approval process
+            that may take a while. Consider switching to "JSON upload" mode to try the full flow with prepared
+            sample data first.
           </p>
         )}
 
         {dataSource === "json_upload" && (
           <div>
             <label>
-              上传 JSON 文件（Reddit 帖子/评论数组）
+              Upload a JSON file (array of Reddit posts/comments)
               <input type="file" accept="application/json,.json" onChange={handleFileChange} />
             </label>
             {uploadedFileName && (
-              <p className="muted">已选择 {uploadedFileName}，共 {uploadedItems.length} 条数据。</p>
+              <p className="muted">Selected {uploadedFileName}, {uploadedItems.length} item(s).</p>
             )}
             {uploadError && <p className="error">{uploadError}</p>}
             <details>
               <summary className="muted" style={{ cursor: "pointer" }}>
-                查看 JSON 格式示例
+                View JSON format example
               </summary>
               <pre className="trace-step-payload">{SAMPLE_JSON}</pre>
             </details>
@@ -169,16 +171,16 @@ export function CreateRun() {
         )}
 
         <label>
-          关键词（可选，逗号分隔）
+          Keywords (optional, comma-separated)
           <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="battery, comfort" />
         </label>
         <label>
-          目标 subreddit（可选，逗号分隔，不带 r/）
+          Target subreddits (optional, comma-separated, without r/)
           <input value={subreddits} onChange={(event) => setSubreddits(event.target.value)} placeholder="headphones, gadgets" />
         </label>
         <div className="form-row">
           <label>
-            最大搜索轮次
+            Max iterations
             <input
               type="number"
               min={1}
@@ -188,7 +190,7 @@ export function CreateRun() {
             />
           </label>
           <label>
-            目标证据数量
+            Target evidence count
             <input
               type="number"
               min={1}
@@ -200,7 +202,7 @@ export function CreateRun() {
         </div>
         {error && <p className="error">{error}</p>}
         <button type="submit" disabled={submitting}>
-          {submitting ? "创建中..." : "启动 Agent"}
+          {submitting ? "Creating..." : "Start Agent"}
         </button>
       </form>
     </div>

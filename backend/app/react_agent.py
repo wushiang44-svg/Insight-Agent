@@ -62,7 +62,7 @@ def run_react_loop(
 
         for iteration in range(1, run.max_iterations + 1):
             if should_stop():
-                storage.update_run_status(run_id, RunStatus.STOPPED, stop_reason="用户手动停止")
+                storage.update_run_status(run_id, RunStatus.STOPPED, stop_reason="Manually stopped by user")
                 return
 
             thought = plan_next_query(
@@ -75,12 +75,12 @@ def run_react_loop(
                 trace(
                     iteration,
                     StepType.ACTION_SEARCH,
-                    f'搜索 "{thought["query"]}"，返回 {len(items)} 条结果',
+                    f'Searched "{thought["query"]}", got {len(items)} result(s)',
                     {"query": thought["query"], "subreddit": thought["subreddit"], "items_returned": len(items)},
                 )
             except Exception as exc:  # noqa: BLE001 - a failed search should not crash the whole run
                 items = []
-                trace(iteration, StepType.ACTION_SEARCH, f"搜索失败: {exc}", {"query": thought["query"], "error": str(exc)})
+                trace(iteration, StepType.ACTION_SEARCH, f"Search failed: {exc}", {"query": thought["query"], "error": str(exc)})
 
             tried_queries.append({"query": thought["query"], "subreddit": thought["subreddit"]})
 
@@ -101,7 +101,7 @@ def run_react_loop(
             trace(
                 iteration,
                 StepType.OBSERVATION,
-                f"分析 {len(items)} 条结果，筛选出 {len(new_evidence)} 条相关证据（累计 {len(collected)} 条）",
+                f"Analyzed {len(items)} result(s), kept {len(new_evidence)} relevant item(s) (total {len(collected)})",
                 {"items_analyzed": len(items), "new_evidence": len(new_evidence), "total_evidence": len(collected)},
             )
             storage.update_run_progress(run_id, iteration, len(collected), RunStatus.SEARCHING)
@@ -122,7 +122,7 @@ def run_react_loop(
         storage.update_run_progress(run_id, iteration, len(collected), RunStatus.SUMMARIZING)
         report = summarize(run_id, run.product_category, collected, llm)
         storage.save_report(report)
-        trace(iteration, StepType.SUMMARY, f"生成商家报告完成，共基于 {len(collected)} 条证据", {"evidence_count": len(collected)})
+        trace(iteration, StepType.SUMMARY, f"Generated the merchant report based on {len(collected)} piece(s) of evidence", {"evidence_count": len(collected)})
         storage.update_run_status(run_id, RunStatus.COMPLETED)
     except Exception as exc:  # noqa: BLE001 - background loop must never crash silently
         storage.update_run_status(run_id, RunStatus.FAILED, error=str(exc))
@@ -165,8 +165,7 @@ def _plan_next_query_llm(
         "You are a search-planning agent inside a Reddit product-feedback research tool for merchants. "
         "Decide the single best next Reddit search query to surface real user opinions (complaints, feature "
         "requests, comparisons, praise) about the given product category. Avoid repeating previous queries. "
-        "If missing aspects are given, target them. Prefer English queries even if input is Chinese. "
-        "Write the reasoning field in Simplified Chinese. Return only JSON."
+        "If missing aspects are given, target them. Write the reasoning field in English. Return only JSON."
     )
     user = json.dumps(
         {
@@ -181,7 +180,7 @@ def _plan_next_query_llm(
             "expected_json": {
                 "query": "a specific Reddit search query in English",
                 "subreddit": "optional subreddit without r/ prefix, empty string to search all of Reddit",
-                "reasoning": "用中文简短说明为什么这样搜索",
+                "reasoning": "a short explanation in English of why this search was chosen",
             },
         },
         ensure_ascii=False,
@@ -193,7 +192,7 @@ def _plan_next_query_llm(
     return {
         "query": query,
         "subreddit": str(parsed.get("subreddit") or "").strip(),
-        "reasoning": str(parsed.get("reasoning") or "AI 规划了下一步搜索。"),
+        "reasoning": str(parsed.get("reasoning") or "AI planned the next search step."),
     }
 
 
@@ -223,15 +222,15 @@ def _plan_next_query_fallback(
     if missing_aspects:
         candidate = f"{base} {missing_aspects[0]}"
         if candidate not in tried_query_texts:
-            return {"query": candidate, "subreddit": subreddit, "reasoning": f"补充覆盖尚未充分讨论的方面：{missing_aspects[0]}"}
+            return {"query": candidate, "subreddit": subreddit, "reasoning": f"Covering an under-discussed aspect: {missing_aspects[0]}"}
     for template in _FALLBACK_QUERY_TEMPLATES:
         candidate = template.format(category=base)
         if candidate not in tried_query_texts:
-            return {"query": candidate, "subreddit": subreddit, "reasoning": "按预设模板轮换生成下一条搜索查询（未配置 LLM）"}
+            return {"query": candidate, "subreddit": subreddit, "reasoning": "Cycling through preset query templates (no LLM configured)"}
     return {
         "query": f"{base} feedback {iteration}",
         "subreddit": subreddit,
-        "reasoning": "预设模板已用尽，追加轮次序号避免重复查询",
+        "reasoning": "Preset templates exhausted; appending an iteration number to avoid repeating queries",
     }
 
 
@@ -253,7 +252,7 @@ def _analyze_item_llm(product_category: str, item: CollectedItem, llm: DeepSeekC
         "You are an evidence analyst mining Reddit for product feedback on behalf of a merchant. Decide whether "
         "this post/comment is genuinely about the given product category (not spam, not an unrelated tangent). "
         "If relevant, classify it and extract one short representative quote (verbatim or lightly trimmed, in the "
-        "original language of the text). Write all reasoning/quote-adjacent text fields in Simplified Chinese "
+        "original language of the text). Write all reasoning/quote-adjacent text fields in English "
         "except the quote field, which should stay in the original language. Return only JSON."
     )
     user = json.dumps(
@@ -356,15 +355,19 @@ def check_sufficiency(
     llm: DeepSeekClient,
 ) -> dict[str, Any]:
     if iteration >= max_iterations:
-        return {"sufficient": True, "reason": "已达到最大搜索轮次上限，进入总结阶段。", "missing_aspects": []}
+        return {"sufficient": True, "reason": "Reached the maximum iteration cap; moving to the summary stage.", "missing_aspects": []}
 
     if len(new_counts) >= DIMINISHING_RETURNS_WINDOW and all(count == 0 for count in new_counts[-DIMINISHING_RETURNS_WINDOW:]):
-        return {"sufficient": True, "reason": "连续两轮搜索都没有找到新的相关证据，收益递减，提前进入总结阶段。", "missing_aspects": []}
+        return {
+            "sufficient": True,
+            "reason": "No new relevant evidence in the last two rounds (diminishing returns); moving to the summary stage early.",
+            "missing_aspects": [],
+        }
 
     if len(collected) < min_evidence_target:
         return {
             "sufficient": False,
-            "reason": f"已收集 {len(collected)} 条证据，尚未达到目标的 {min_evidence_target} 条，继续搜索。",
+            "reason": f"Collected {len(collected)} piece(s) of evidence, short of the {min_evidence_target} target; continuing to search.",
             "missing_aspects": [],
         }
 
@@ -391,7 +394,7 @@ def _check_sufficiency_llm(
         "evidence collected so far is broad and deep enough to write a solid, actionable merchant report, or "
         "whether the agent should keep searching. Consider evidence volume, subreddit diversity, and aspect "
         "coverage (are pain points concentrated on very few aspects, suggesting more digging would surface more "
-        "useful angles?). Write reason and missing_aspects in Simplified Chinese. Return only JSON."
+        "useful angles?). Write reason and missing_aspects in English. Return only JSON."
     )
     user = json.dumps(
         {
@@ -404,8 +407,8 @@ def _check_sufficiency_llm(
             "aspect_counts": dict(aspect_counts),
             "expected_json": {
                 "sufficient": "true if ready to summarize, false to keep searching",
-                "reason": "用中文简短说明理由",
-                "missing_aspects": ["尚未充分覆盖、值得继续搜索的方面标签"],
+                "reason": "a short explanation in English",
+                "missing_aspects": ["aspect labels that are not yet well covered and worth searching further"],
             },
         },
         ensure_ascii=False,
@@ -413,7 +416,7 @@ def _check_sufficiency_llm(
     parsed = llm.json_chat(DEFAULT_MODEL, system, user)
     return {
         "sufficient": bool(parsed.get("sufficient")),
-        "reason": str(parsed.get("reason") or "AI 判断了当前证据是否充分。"),
+        "reason": str(parsed.get("reason") or "AI judged whether the current evidence is sufficient."),
         "missing_aspects": [str(item) for item in parsed.get("missing_aspects", []) if isinstance(item, (str, int, float))],
     }
 
@@ -421,12 +424,16 @@ def _check_sufficiency_llm(
 def _check_sufficiency_fallback(collected: list[Evidence], min_evidence_target: int) -> dict[str, Any]:
     subreddit_count = len({item.subreddit for item in collected})
     if len(collected) >= min_evidence_target and subreddit_count >= 2:
-        return {"sufficient": True, "reason": f"已收集 {len(collected)} 条证据，覆盖 {subreddit_count} 个 subreddit，判定为充分（未配置 LLM，使用规则判断）。", "missing_aspects": []}
+        return {
+            "sufficient": True,
+            "reason": f"Collected {len(collected)} piece(s) of evidence across {subreddit_count} subreddit(s); judged sufficient (rule-based fallback, no LLM configured).",
+            "missing_aspects": [],
+        }
     aspect_counts = Counter(item.aspect for item in collected)
     weak_aspects = [aspect for aspect, count in aspect_counts.most_common() if count <= 1]
     return {
         "sufficient": False,
-        "reason": "尚未覆盖足够多的 subreddit 或方面，继续搜索（未配置 LLM，使用规则判断）。",
+        "reason": "Not enough subreddit or aspect diversity yet; continuing to search (rule-based fallback, no LLM configured).",
         "missing_aspects": weak_aspects[:3],
     }
 
@@ -497,7 +504,7 @@ def _summarize_llm(
         "You are a senior product analyst preparing a report for a merchant, based on aggregated Reddit evidence "
         "about their product category. Write concrete, specific, actionable recommendations the merchant can use "
         "to improve the product, grounded in the aggregated pain points and feature requests. Also write a short "
-        "markdown summary (a few sections, no more than ~300 words). Respond entirely in Simplified Chinese. "
+        "markdown summary (a few sections, no more than ~300 words). Respond entirely in English. "
         "Return only JSON."
     )
     user = json.dumps(
@@ -508,8 +515,8 @@ def _summarize_llm(
             "feature_requests": feature_requests[:8],
             "praised_aspects": praised[:5],
             "expected_json": {
-                "recommended_actions": ["3 到 6 条具体可执行的产品改进建议"],
-                "summary_markdown": "简短的 Markdown 格式总结报告",
+                "recommended_actions": ["3 to 6 concrete, actionable product-improvement recommendations"],
+                "summary_markdown": "a short Markdown-formatted summary report",
             },
         },
         ensure_ascii=False,
@@ -524,19 +531,21 @@ def _summarize_llm(
 
 def _summarize_fallback(product_category: str, pain_points: list[dict[str, Any]], feature_requests: list[dict[str, Any]]) -> dict[str, Any]:
     actions = [
-        f"针对「{entry['aspect']}」的反馈较多（{entry['count']} 条），建议优先排查并改进。" for entry in pain_points[:5]
+        f'"{entry["aspect"]}" has a high volume of feedback ({entry["count"]} item(s)); recommend investigating and improving it first.'
+        for entry in pain_points[:5]
     ]
     actions.extend(
-        f"用户多次提出关于「{entry['aspect']}」的功能诉求（{entry['count']} 条），可评估纳入产品路线图。" for entry in feature_requests[:3]
+        f'Users repeatedly requested a "{entry["aspect"]}" feature ({entry["count"]} mention(s)); consider adding it to the product roadmap.'
+        for entry in feature_requests[:3]
     )
     if not actions:
-        actions = ["未收集到足够的负面或功能类反馈，建议扩大搜索范围或延长观察周期。"]
-    lines = [f"# {product_category} Reddit 用户反馈报告", ""]
-    lines.append("## 主要痛点")
+        actions = ["Not enough negative or feature-request feedback was collected; consider broadening the search or extending the observation window."]
+    lines = [f"# {product_category} Reddit User Feedback Report", ""]
+    lines.append("## Top Pain Points")
     for entry in pain_points[:5]:
-        lines.append(f"- **{entry['aspect']}**：{entry['count']} 条相关证据")
+        lines.append(f"- **{entry['aspect']}**: {entry['count']} piece(s) of evidence")
     lines.append("")
-    lines.append("## 功能诉求")
+    lines.append("## Feature Requests")
     for entry in feature_requests[:5]:
-        lines.append(f"- **{entry['aspect']}**：{entry['count']} 条相关证据")
+        lines.append(f"- **{entry['aspect']}**: {entry['count']} piece(s) of evidence")
     return {"recommended_actions": actions, "summary_markdown": "\n".join(lines)}

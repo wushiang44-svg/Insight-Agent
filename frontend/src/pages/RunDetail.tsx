@@ -10,7 +10,7 @@ const POLL_INTERVAL_MS = 2000;
 
 const DATA_SOURCE_LABELS: Record<RunDetailData["run"]["data_source"], string> = {
   reddit_api: "Reddit API",
-  json_upload: "JSON 上传",
+  json_upload: "JSON Upload",
 };
 
 export function RunDetail() {
@@ -50,7 +50,7 @@ export function RunDetail() {
   }
 
   if (error) return <div className="page error">{error}</div>;
-  if (!detail) return <div className="page muted">加载中...</div>;
+  if (!detail) return <div className="page muted">Loading...</div>;
 
   const { run, trace_events: traceEvents, is_running: isRunning } = detail;
   const isActive = ACTIVE_STATUSES.has(run.status);
@@ -62,25 +62,25 @@ export function RunDetail() {
         <StatusBadge status={run.status} />
       </div>
       <div className="card run-summary">
-        <div>数据来源：{DATA_SOURCE_LABELS[run.data_source]}</div>
+        <div>Data source: {DATA_SOURCE_LABELS[run.data_source]}</div>
         <div>
-          搜索轮次：{run.iteration_count} / {run.max_iterations}
+          Iterations: {run.iteration_count} / {run.max_iterations}
         </div>
-        <div>已收集证据：{run.evidence_count}</div>
-        <div>目标证据数：{run.min_evidence_target}</div>
-        {run.error && <div className="error">错误：{run.error}</div>}
-        {run.stop_reason && <div className="muted">停止原因：{run.stop_reason}</div>}
+        <div>Evidence collected: {run.evidence_count}</div>
+        <div>Target evidence count: {run.min_evidence_target}</div>
+        {run.error && <div className="error">Error: {run.error}</div>}
+        {run.stop_reason && <div className="muted">Stop reason: {run.stop_reason}</div>}
         <div className="actions">
           {isActive && isRunning && (
             <button onClick={handleStop} className="secondary">
-              停止 Agent
+              Stop Agent
             </button>
           )}
-          {run.status === "completed" && <Link to={`/runs/${run.run_id}/report`}>查看商家报告 →</Link>}
+          {run.status === "completed" && <Link to={`/runs/${run.run_id}/report`}>View merchant report →</Link>}
         </div>
       </div>
 
-      <h2>Agent 推理过程</h2>
+      <h2>Agent Reasoning Process</h2>
       <TraceTimeline events={traceEvents} />
     </div>
   );

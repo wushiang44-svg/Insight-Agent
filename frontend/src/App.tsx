@@ -9,7 +9,7 @@ function App() {
     <div className="app">
       <header className="app-header">
         <Link to="/" className="brand">
-          Reddit 产品反馈洞察 Agent
+          Reddit Product Feedback Insight Agent
         </Link>
       </header>
       <main>

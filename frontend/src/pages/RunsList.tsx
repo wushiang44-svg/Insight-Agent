@@ -6,7 +6,7 @@ import { StatusBadge } from "../components/StatusBadge";
 
 const DATA_SOURCE_LABELS: Record<RunRecord["data_source"], string> = {
   reddit_api: "Reddit API",
-  json_upload: "JSON 上传",
+  json_upload: "JSON Upload",
 };
 
 export function RunsList() {
@@ -31,26 +31,26 @@ export function RunsList() {
   return (
     <div className="page">
       <div className="page-header">
-        <h1>调研任务</h1>
+        <h1>Research Runs</h1>
         <Link className="button-link" to="/new">
-          + 新建调研
+          + New Run
         </Link>
       </div>
       {error && <p className="error">{error}</p>}
-      {runs === null && !error && <p className="muted">加载中...</p>}
+      {runs === null && !error && <p className="muted">Loading...</p>}
       {runs !== null && runs.length === 0 && (
-        <p className="muted">还没有任何调研任务，点击右上角开始第一次调研。</p>
+        <p className="muted">No research runs yet. Click the button above to start your first one.</p>
       )}
       {runs !== null && runs.length > 0 && (
         <table className="table">
           <thead>
             <tr>
-              <th>产品类目</th>
-              <th>数据来源</th>
-              <th>状态</th>
-              <th>轮次</th>
-              <th>证据数</th>
-              <th>创建时间</th>
+              <th>Product Category</th>
+              <th>Data Source</th>
+              <th>Status</th>
+              <th>Iterations</th>
+              <th>Evidence</th>
+              <th>Created At</th>
             </tr>
           </thead>
           <tbody>

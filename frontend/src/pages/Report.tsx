@@ -13,9 +13,9 @@ function AspectTable({ title, groups, emptyText }: { title: string; groups: Aspe
         <table className="table">
           <thead>
             <tr>
-              <th>方面</th>
-              <th>出现次数</th>
-              <th>代表性证据</th>
+              <th>Aspect</th>
+              <th>Count</th>
+              <th>Representative Evidence</th>
             </tr>
           </thead>
           <tbody>
@@ -58,17 +58,17 @@ export function Report() {
   }, [runId]);
 
   if (error) return <div className="page error">{error}</div>;
-  if (!report) return <div className="page muted">加载中...</div>;
+  if (!report) return <div className="page muted">Loading...</div>;
 
   return (
     <div className="page">
       <div className="page-header">
-        <h1>商家优化报告</h1>
-        <Link to={`/runs/${runId}`}>← 返回调研详情</Link>
+        <h1>Merchant Optimization Report</h1>
+        <Link to={`/runs/${runId}`}>← Back to run detail</Link>
       </div>
 
       <section className="card">
-        <h2>情感分布</h2>
+        <h2>Sentiment Breakdown</h2>
         <div className="sentiment-breakdown">
           {Object.entries(report.sentiment_breakdown).map(([sentiment, count]) => (
             <span key={sentiment} className={`sentiment-pill sentiment-${sentiment}`}>
@@ -78,13 +78,13 @@ export function Report() {
         </div>
       </section>
 
-      <AspectTable title="主要痛点" groups={report.top_pain_points} emptyText="未发现明显痛点。" />
-      <AspectTable title="功能诉求" groups={report.feature_requests} emptyText="未发现明确的功能诉求。" />
-      <AspectTable title="用户好评" groups={report.praised_aspects} emptyText="未发现明显好评。" />
-      <AspectTable title="竞品对比" groups={report.competitor_mentions} emptyText="未发现竞品对比讨论。" />
+      <AspectTable title="Top Pain Points" groups={report.top_pain_points} emptyText="No significant pain points found." />
+      <AspectTable title="Feature Requests" groups={report.feature_requests} emptyText="No clear feature requests found." />
+      <AspectTable title="Praise" groups={report.praised_aspects} emptyText="No significant praise found." />
+      <AspectTable title="Competitor Mentions" groups={report.competitor_mentions} emptyText="No competitor comparisons found." />
 
       <section className="card">
-        <h2>建议的产品优化行动</h2>
+        <h2>Recommended Product Improvements</h2>
         <ul>
           {report.recommended_actions.map((action, index) => (
             <li key={index}>{action}</li>
@@ -93,7 +93,7 @@ export function Report() {
       </section>
 
       <section className="card">
-        <h2>总结</h2>
+        <h2>Summary</h2>
         <pre className="summary-markdown">{report.summary_markdown}</pre>
       </section>
     </div>

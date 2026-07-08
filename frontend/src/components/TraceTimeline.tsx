@@ -1,11 +1,11 @@
 import type { TraceEvent } from "../api";
 
 const STEP_LABELS: Record<TraceEvent["step_type"], string> = {
-  thought: "思考",
-  action_search: "搜索",
-  observation: "观察 / 筛选",
-  sufficiency_check: "信息是否充分",
-  summary: "生成报告",
+  thought: "Thought",
+  action_search: "Search",
+  observation: "Observation / Filter",
+  sufficiency_check: "Sufficiency Check",
+  summary: "Summary",
 };
 
 const STEP_ICONS: Record<TraceEvent["step_type"], string> = {
@@ -18,7 +18,7 @@ const STEP_ICONS: Record<TraceEvent["step_type"], string> = {
 
 export function TraceTimeline({ events }: { events: TraceEvent[] }) {
   if (events.length === 0) {
-    return <p className="muted">Agent 尚未产生任何步骤。</p>;
+    return <p className="muted">The agent hasn't produced any steps yet.</p>;
   }
 
   const grouped = new Map<number, TraceEvent[]>();
@@ -32,7 +32,7 @@ export function TraceTimeline({ events }: { events: TraceEvent[] }) {
     <div className="trace-timeline">
       {[...grouped.entries()].map(([iteration, iterationEvents]) => (
         <div key={iteration} className="trace-iteration">
-          <div className="trace-iteration-header">第 {iteration} 轮</div>
+          <div className="trace-iteration-header">Round {iteration}</div>
           <ol className="trace-steps">
             {iterationEvents.map((event, index) => (
               <li key={index} className={`trace-step trace-step-${event.step_type}`}>

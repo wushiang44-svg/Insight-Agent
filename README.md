@@ -1,76 +1,76 @@
-# Reddit 产品反馈洞察 Agent
+# Reddit Product Feedback Insight Agent
 
-给定一个产品类目（例如 "wireless earbuds"），Agent 会在 Reddit 上运行一个 ReAct 循环：
+Given a product category (e.g. "wireless earbuds"), the agent runs a ReAct loop on Reddit:
 
-1. **思考（Thought）**：决定下一步搜索什么。
-2. **行动（Action）**：搜索（数据来源可插拔，见下）。
-3. **观察（Observation）**：用 LLM（或规则兜底）筛选出真正相关的帖子/评论，并打上痛点/功能诉求/竞品对比/好评等标签。
-4. **判断是否充分（Sufficiency check）**：信息不够就回到第 1 步继续搜索；信息足够（或达到轮次上限/连续两轮无新证据）就进入总结阶段。
-5. **总结（Summary）**：生成一份商家可读的产品优化报告。
+1. **Thought**: decide what to search next.
+2. **Action**: search (the data source is pluggable, see below).
+3. **Observation**: use an LLM (or a rule-based fallback) to filter for genuinely relevant posts/comments and tag them as pain points, feature requests, competitor comparisons, or praise.
+4. **Sufficiency check**: if there isn't enough evidence yet, loop back to step 1; if there's enough (or the iteration cap is reached, or two rounds in a row found no new evidence), move to the summary stage.
+5. **Summary**: generate a merchant-readable product improvement report.
 
-前端（React + Vite）可以实时查看 Agent 的推理过程，并在完成后查看报告。
+The frontend (React + Vite) shows the agent's reasoning process live and lets you view the report once it's done.
 
-架构参考了 `demo/super_crawler`（一个更完整的 Reddit 需求发现系统），但简化为单一 ReAct 循环，并采用独立的 React 前端 + FastAPI 后端。
+The architecture was inspired by `demo/super_crawler` (a more complete Reddit requirement-discovery system), simplified down to a single ReAct loop, with a standalone React frontend + FastAPI backend.
 
-### 数据采集层是可插拔的
+### The data-collection layer is pluggable
 
-`react_agent.py` 只依赖 `app/collectors/base.py` 里定义的抽象接口 `Collector`（`available()` + `search(query, subreddit, limit)`），完全不知道、也不导入任何具体数据源。数据源是 Reddit（PRAW）、JSON 上传、还是以后的 Amazon/YouTube，对 ReAct 循环和后续的分析/打分/总结逻辑来说没有任何区别。
+`react_agent.py` only depends on the abstract `Collector` interface defined in `app/collectors/base.py` (`available()` + `search(query, subreddit, limit)`) — it has no knowledge of, and never imports, any concrete data source. Whether the source is Reddit (PRAW), a JSON upload, or a future Amazon/YouTube collector makes no difference to the ReAct loop or the downstream analysis/scoring/summary logic.
 
 ```
 app/collectors/
-  base.py          Collector 抽象接口 + CollectorContext
-  registry.py       DataSource -> 工厂函数 的注册表，build_collector() 是唯一的查找入口
-  reddit.py         RedditCollector（主数据源，PRAW，只读模式），文件底部 register_collector(...) 自注册
-  json_upload.py    JsonUploadCollector（回退数据源），同样自注册
+  base.py          Collector abstract interface + CollectorContext
+  registry.py       DataSource -> factory registry; build_collector() is the only lookup point
+  reddit.py         RedditCollector (primary source, PRAW, read-only mode), self-registers via register_collector(...) at the bottom of the file
+  json_upload.py    JsonUploadCollector (fallback source), self-registers the same way
 ```
 
-`run_manager.py` 启动一次调研时，只调用 `build_collector(CollectorContext(run, storage))`——它从注册表里查工厂函数并调用，从不对 `data_source` 做 if/else 分支。这意味着以后要接入 Amazon、YouTube 或其他评论平台：
+When starting a run, `run_manager.py` only ever calls `build_collector(CollectorContext(run, storage))` — it looks up the factory in the registry and calls it, and never branches on `data_source` itself. That means adding Amazon, YouTube, or another review platform later is just:
 
-1. 在 `models.py` 的 `DataSource` 里加一个新枚举值。
-2. 新建 `app/collectors/amazon.py`，写一个实现 `Collector` 接口的类，并在文件底部调用 `register_collector(DataSource.AMAZON, ...)` 自注册。
-3. 在 `app/collectors/__init__.py` 里加一行 `from . import amazon as _amazon`。
+1. Add a new enum value to `DataSource` in `models.py`.
+2. Create `app/collectors/amazon.py`, write a class implementing the `Collector` interface, and call `register_collector(DataSource.AMAZON, ...)` at the bottom of the file to self-register.
+3. Add one import line in `app/collectors/__init__.py`: `from . import amazon as _amazon`.
 
-`react_agent.py`、`run_manager.py` 都不需要动。
+`react_agent.py` and `run_manager.py` never need to change.
 
-现有两个数据源：
+Two data sources exist today:
 
-- **Reddit API**（主数据源，`app/collectors/reddit.py`）：实时抓取。**目前 Reddit Data API 走的是新的 "Responsible Builder" 审批流程，申请可能被拒或长时间挂起**，所以这条路径可能暂时用不了。
-- **JSON 上传**（回退数据源，`app/collectors/json_upload.py`）：把预先准备好的 Reddit 帖子/评论 JSON 数组喂给 Agent，不需要任何 Reddit 凭证，适合演示、离线分析、或者 Reddit API 申请下来之前先把整套链路跑通。
+- **Reddit API** (primary source, `app/collectors/reddit.py`): live search. **The Reddit Data API currently requires approval under the new "Responsible Builder" policy, so applications may be rejected or take a long time to process**, meaning this path may be temporarily unavailable.
+- **JSON upload** (fallback source, `app/collectors/json_upload.py`): feeds a pre-prepared JSON array of Reddit posts/comments to the agent. Requires no Reddit credentials at all — good for demos, offline analysis, or getting the full pipeline working before a Reddit API application comes through.
 
-新建调研时在前端选择「数据来源」即可切换，两者共用同一套后续分析/判断/总结逻辑。
+Pick the "data source" when creating a run in the frontend; both share the exact same downstream analysis/judgment/summary logic.
 
-## 目录结构
+## Project layout
 
 ```
-backend/    FastAPI + SQLite + ReAct agent（Python）
+backend/    FastAPI + SQLite + ReAct agent (Python)
 frontend/   Vite + React + TypeScript
 ```
 
-## 准备工作
+## Setup
 
-### 1. Reddit API 凭证（可选——数据来源选「JSON 上传」时不需要）
+### 1. Reddit API credentials (optional — not needed if you pick "JSON upload")
 
-1. 访问 https://www.reddit.com/prefs/apps
-2. 点击 "create app" / "create another app"
-3. 类型选择 **script**
-4. 记下 `client_id`（应用名下方那串字符）和 `client_secret`
+1. Visit https://www.reddit.com/prefs/apps
+2. Click "create app" / "create another app"
+3. Choose type **script**
+4. Note down `client_id` (the string under the app name) and `client_secret`
 
-如果暂时申请不到（见上面「数据来源是可插拔的」），直接跳过这一步，新建调研时选择「JSON 上传」即可。
+If you can't get approved right away (see "The data-collection layer is pluggable" above), just skip this step and pick "JSON upload" when creating a run.
 
-### 2. DeepSeek API Key（可选，但强烈建议）
+### 2. DeepSeek API key (optional, but strongly recommended)
 
-在 https://platform.deepseek.com 获取。不配置也能跑，Agent 会退化为基于关键词规则的兜底逻辑（结果质量明显更弱）。
+Get one at https://platform.deepseek.com. The app still runs without it — it falls back to deterministic keyword-rule logic (noticeably lower quality).
 
-### 3. 配置 `.env`
+### 3. Configure `.env`
 
 ```bash
 cd backend
 cp .env.example .env
-# 编辑 .env，填入 DEEPSEEK_API_KEY / REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USER_AGENT
-# 如果只打算用 JSON 上传模式，这一步可以直接跳过
+# edit .env: fill in DEEPSEEK_API_KEY / REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USER_AGENT
+# if you only plan to use JSON upload mode, you can skip this entirely
 ```
 
-## 运行后端
+## Run the backend
 
 ```bash
 cd backend
@@ -80,15 +80,15 @@ python -m venv .venv
 ./.venv/Scripts/python -m uvicorn app.main:app --reload
 ```
 
-后端默认监听 `http://127.0.0.1:8000`。
+The backend listens on `http://127.0.0.1:8000` by default.
 
-运行测试（不需要任何 API key，使用注入的假 collector/LLM 客户端）：
+Run the tests (no API key needed — they inject fake collector/LLM clients):
 
 ```bash
 ./.venv/Scripts/python -m pytest
 ```
 
-## 运行前端
+## Run the frontend
 
 ```bash
 cd frontend
@@ -96,19 +96,19 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5173`。
+Open `http://localhost:5173`.
 
-## 使用流程
+## Usage
 
-1. 在首页点击「新建调研」，填写产品类目（必填）、关键词、目标 subreddit、最大搜索轮次、目标证据数量。
-2. 选择「数据来源」：
-   - **Reddit API**：需要 `.env` 里配置好 Reddit 凭证。如果没配置，页面会提示警告并建议改用 JSON 上传。
-   - **JSON 上传**：上传一个 Reddit 帖子/评论 JSON 数组文件（页面上有格式示例），不需要任何 Reddit 凭证。
-3. 提交后进入调研详情页，页面每 2 秒轮询一次后端，实时展示 Agent 的思考 / 搜索 / 观察 / 充分性判断 每一步。
-4. 当状态变为「已完成」后，点击「查看商家报告」，查看按方面聚合的痛点、功能诉求、好评、竞品对比、情感分布，以及建议的产品优化行动。
+1. On the home page, click "New Run" and fill in the product category (required), keywords, target subreddits, max iterations, and target evidence count.
+2. Choose a "Data source":
+   - **Reddit API**: requires Reddit credentials configured in `.env`. If they're missing, the page shows a warning and suggests switching to JSON upload.
+   - **JSON upload**: upload a JSON array of Reddit posts/comments (a format example is shown on the page). No Reddit credentials required.
+3. After submitting, you land on the run detail page, which polls the backend every 2 seconds and shows the agent's thought / search / observation / sufficiency-check steps live.
+4. Once the status becomes "Completed", click "View merchant report" to see pain points, feature requests, praise, competitor mentions, and sentiment breakdown grouped by aspect, plus recommended product-improvement actions.
 
-## 说明
+## Notes
 
-- 数据来源选「Reddit API」但没有配置凭证时，搜索行动会失败并记录在推理轨迹中（不会导致整个 Agent 崩溃），Agent 仍会走到轮次上限并生成一份基于 0 条证据的报告——用于验证整套链路，但没有实际意义。想看真实内容，要么配置 Reddit 凭证，要么改用「JSON 上传」。
-- 「JSON 上传」模式下，Agent 不会重复返回同一条数据；上传的数据用完后视为「连续两轮无新证据」，自动进入总结阶段——这也是验证 ReAct 循环判断逻辑最简单可靠的方式。
-- 没有配置 DeepSeek key 时，规划 / 分析 / 充分性判断 / 总结 全部退化为确定性的关键词规则，可用于本地开发和测试，但报告质量远不如接入真实 LLM。
+- If "Reddit API" is selected but no credentials are configured, the search action fails and is recorded in the reasoning trace (it won't crash the whole run) — the agent still runs to the iteration cap and generates a report based on 0 pieces of evidence, useful for verifying the pipeline end-to-end but not meaningful otherwise. To see real content, either configure Reddit credentials or switch to "JSON upload".
+- In "JSON upload" mode, the agent never returns the same item twice; once the uploaded data is exhausted, it's treated as "two rounds with no new evidence" and the loop moves to the summary stage automatically — this is also the simplest, most reliable way to exercise the ReAct loop's judgment logic.
+- Without a configured DeepSeek key, planning / analysis / sufficiency-checking / summarizing all fall back to deterministic keyword rules — useful for local development and testing, but report quality is nowhere near as good as with a real LLM.

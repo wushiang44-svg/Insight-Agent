@@ -77,7 +77,7 @@ def test_stops_at_iteration_cap_when_target_never_reached(tmp_path: Path) -> Non
     events = storage.list_trace_events(run_id)
     sufficiency_events = [event for event in events if event.step_type.value == "sufficiency_check"]
     assert len(sufficiency_events) == 3
-    assert "最大搜索轮次" in sufficiency_events[-1].message
+    assert "maximum iteration cap" in sufficiency_events[-1].message
     assert storage.get_report(run_id) is not None
 
 
@@ -93,7 +93,7 @@ def test_stops_early_on_diminishing_returns(tmp_path: Path) -> None:
     sufficiency_events = [event for event in events if event.step_type.value == "sufficiency_check"]
     assert sufficiency_events[0].payload["sufficient"] is False
     assert sufficiency_events[-1].payload["sufficient"] is True
-    assert "收益递减" in sufficiency_events[-1].message
+    assert "diminishing returns" in sufficiency_events[-1].message
 
 
 def test_deduplicates_evidence_by_url_across_iterations(tmp_path: Path) -> None:

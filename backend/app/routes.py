@@ -43,7 +43,7 @@ def get_config() -> dict:
 @router.post("/runs")
 def create_run(payload: CreateRunRequest) -> dict:
     if payload.data_source == DataSource.JSON_UPLOAD and not payload.uploaded_items:
-        raise HTTPException(status_code=400, detail="JSON 上传模式需要至少一条数据，请先上传 JSON 文件。")
+        raise HTTPException(status_code=400, detail="JSON upload mode requires at least one item — please upload a JSON file first.")
     storage = _storage()
     try:
         run = storage.create_run(
