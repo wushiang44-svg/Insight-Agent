@@ -50,10 +50,15 @@ frontend/   Vite + React + TypeScript
 
 ### 1. Reddit API credentials (optional — not needed if you pick "JSON upload")
 
-1. Visit https://www.reddit.com/prefs/apps
-2. Click "create app" / "create another app"
-3. Choose type **script**
-4. Note down `client_id` (the string under the app name) and `client_secret`
+As of the "Responsible Builder" policy, Reddit Data API access is no longer fully self-service — you first need
+to request access/approval:
+
+1. Submit a request at https://support.reddithelp.com/hc/en-us/requests/new?ticket_form_id=14868593862164
+   (requires logging into your Reddit account; the form asks about your intended use case).
+2. Once approved, create/access your app's credentials at https://www.reddit.com/prefs/apps ("create app" /
+   "create another app", type **script**).
+3. Note down `client_id` (the string under the app name) and `client_secret` — these are still required
+   regardless of the approval process, since PRAW authenticates with them directly.
 
 If you can't get approved right away (see "The data-collection layer is pluggable" above), just skip this step and pick "JSON upload" when creating a run.
 
