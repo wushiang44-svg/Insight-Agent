@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_FAST_MODEL = "deepseek-v4-flash"
+DEFAULT_PRO_MODEL = "deepseek-v4-pro"
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -32,10 +34,27 @@ def deepseek_api_key() -> str:
     return os.environ.get("DEEPSEEK_API_KEY", "")
 
 
+def deepseek_base_url() -> str:
+    load_dotenv()
+    return os.environ.get("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL)
+
+
+def fast_model() -> str:
+    """Cheap/quick model used for search planning, item analysis, and sufficiency checks."""
+    load_dotenv()
+    return os.environ.get("FAST_MODEL", DEFAULT_FAST_MODEL)
+
+
+def pro_model() -> str:
+    """Stronger model used only for the final merchant report, where quality matters most."""
+    load_dotenv()
+    return os.environ.get("PRO_MODEL", DEFAULT_PRO_MODEL)
+
+
 class DeepSeekClient:
-    def __init__(self, api_key: str | None = None, base_url: str = DEEPSEEK_BASE_URL, timeout_seconds: int = 45):
+    def __init__(self, api_key: str | None = None, base_url: str | None = None, timeout_seconds: int = 45):
         self.api_key = api_key if api_key is not None else deepseek_api_key()
-        self.base_url = base_url
+        self.base_url = base_url if base_url is not None else deepseek_base_url()
         self.timeout_seconds = timeout_seconds
 
     def available(self) -> bool:
@@ -54,7 +73,7 @@ class DeepSeekClient:
             "response_format": {"type": "json_object"},
         }
         request = urllib.request.Request(
-            self.base_url,
+            f"{self.base_url.rstrip('/')}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self.api_key}",

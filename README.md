@@ -64,14 +64,27 @@ If you can't get approved right away (see "The data-collection layer is pluggabl
 
 ### 2. DeepSeek API key (optional, but strongly recommended)
 
-Get one at https://platform.deepseek.com. The app still runs without it — it falls back to deterministic keyword-rule logic (noticeably lower quality).
+Get one at https://platform.deepseek.com. Only **one** API key is needed — like most LLM providers, DeepSeek
+authenticates a whole account with a single key, and the model is picked per API request, not per key. The app
+still runs without a key — it falls back to deterministic keyword-rule logic (noticeably lower quality).
+
+The two model environment variables (see `.env.example`) split work by cost/quality:
+
+- `FAST_MODEL` (default `deepseek-v4-flash`): search planning, item relevance/tagging analysis, and sufficiency
+  checks — many small calls per run, so a cheap/fast model makes sense here.
+- `PRO_MODEL` (default `deepseek-v4-pro`): only the final merchant report — one call per run, where output
+  quality matters most.
+
+Double-check these default model names against DeepSeek's current docs/dashboard before relying on them — they
+may not match the exact model IDs available on your account.
 
 ### 3. Configure `.env`
 
 ```bash
 cd backend
 cp .env.example .env
-# edit .env: fill in DEEPSEEK_API_KEY / REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USER_AGENT
+# edit .env: fill in DEEPSEEK_API_KEY (FAST_MODEL/PRO_MODEL have defaults) /
+# REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USER_AGENT
 # if you only plan to use JSON upload mode, you can skip this entirely
 ```
 

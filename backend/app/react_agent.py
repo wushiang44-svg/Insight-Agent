@@ -6,7 +6,7 @@ from collections import Counter
 from typing import Any, Callable
 
 from .collectors.base import Collector
-from .llm import DeepSeekClient
+from .llm import DeepSeekClient, fast_model, pro_model
 from .models import (
     CollectedItem,
     Evidence,
@@ -26,7 +26,6 @@ from .text import (
     short_quote,
 )
 
-DEFAULT_MODEL = "deepseek-v4-flash"
 DIMINISHING_RETURNS_WINDOW = 2
 
 
@@ -185,7 +184,7 @@ def _plan_next_query_llm(
         },
         ensure_ascii=False,
     )
-    parsed = llm.json_chat(DEFAULT_MODEL, system, user)
+    parsed = llm.json_chat(fast_model(), system, user)
     query = str(parsed.get("query") or "").strip()
     if not query:
         raise ValueError("planner returned an empty query")
@@ -277,7 +276,7 @@ def _analyze_item_llm(product_category: str, item: CollectedItem, llm: DeepSeekC
         },
         ensure_ascii=False,
     )
-    parsed = llm.json_chat(DEFAULT_MODEL, system, user)
+    parsed = llm.json_chat(fast_model(), system, user)
     is_relevant = bool(parsed.get("is_relevant"))
     if not is_relevant:
         return {"is_relevant": False}
@@ -413,7 +412,7 @@ def _check_sufficiency_llm(
         },
         ensure_ascii=False,
     )
-    parsed = llm.json_chat(DEFAULT_MODEL, system, user)
+    parsed = llm.json_chat(fast_model(), system, user)
     return {
         "sufficient": bool(parsed.get("sufficient")),
         "reason": str(parsed.get("reason") or "AI judged whether the current evidence is sufficient."),
@@ -521,7 +520,7 @@ def _summarize_llm(
         },
         ensure_ascii=False,
     )
-    parsed = llm.json_chat(DEFAULT_MODEL, system, user)
+    parsed = llm.json_chat(pro_model(), system, user)
     actions = parsed.get("recommended_actions")
     return {
         "recommended_actions": [str(item) for item in actions] if isinstance(actions, list) else [],
