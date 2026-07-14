@@ -5,6 +5,7 @@ from pathlib import Path
 from app.collectors import CollectorContext, build_collector, registry as registry_module
 from app.collectors.json_upload import JsonUploadCollector
 from app.collectors.reddit import RedditCollector
+from app.collectors.scraper import RedditScraperCollector
 from app.models import CollectedItem, DataSource
 from app.storage import Storage
 
@@ -22,6 +23,15 @@ def test_build_collector_dispatches_reddit_api(tmp_path: Path) -> None:
     collector = build_collector(CollectorContext(run=run, storage=storage))
 
     assert isinstance(collector, RedditCollector)
+
+
+def test_build_collector_dispatches_reddit_scraper(tmp_path: Path) -> None:
+    storage = make_storage(tmp_path)
+    run = storage.create_run("dog food", [], [], 6, 25, data_source=DataSource.REDDIT_SCRAPER)
+
+    collector = build_collector(CollectorContext(run=run, storage=storage))
+
+    assert isinstance(collector, RedditScraperCollector)
 
 
 def test_build_collector_dispatches_json_upload(tmp_path: Path) -> None:

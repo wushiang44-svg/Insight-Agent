@@ -20,7 +20,8 @@ The architecture was inspired by `demo/super_crawler` (a more complete Reddit re
 app/collectors/
   base.py          Collector abstract interface + CollectorContext
   registry.py       DataSource -> factory registry; build_collector() is the only lookup point
-  reddit.py         RedditCollector (primary source, PRAW, read-only mode), self-registers via register_collector(...) at the bottom of the file
+  reddit.py         RedditCollector (primary source, PRAW, read-only OAuth mode), self-registers via register_collector(...) at the bottom of the file
+  scraper.py        RedditScraperCollector (unofficial stopgap, no OAuth), self-registers the same way
   json_upload.py    JsonUploadCollector (fallback source), self-registers the same way
 ```
 
@@ -32,9 +33,10 @@ When starting a run, `run_manager.py` only ever calls `build_collector(Collector
 
 `react_agent.py` and `run_manager.py` never need to change.
 
-Two data sources exist today:
+Three data sources exist today:
 
-- **Reddit API** (primary source, `app/collectors/reddit.py`): live search. **The Reddit Data API currently requires approval under the new "Responsible Builder" policy, so applications may be rejected or take a long time to process**, meaning this path may be temporarily unavailable.
+- **Reddit API** (primary source, `app/collectors/reddit.py`): live search via PRAW's read-only OAuth mode. **The Reddit Data API currently requires approval under the new "Responsible Builder" policy, so applications may be rejected or take a long time to process**, meaning this path may be temporarily unavailable.
+- **Reddit scraper** (stopgap source, `app/collectors/scraper.py`): hits Reddit's public `.json` listing/search/comment endpoints directly over HTTP, with no OAuth credentials required. It's unofficial and unsupported — no SLA, much more aggressive rate limiting/blocking than the real API, and technically outside Reddit's API Terms for automated collection — so treat it as a temporary bridge while a Reddit API application is pending, not a long-term replacement. Client-side requests are throttled (2s delay by default) to be polite to the unauthenticated endpoint.
 - **JSON upload** (fallback source, `app/collectors/json_upload.py`): feeds a pre-prepared JSON array of Reddit posts/comments to the agent. Requires no Reddit credentials at all — good for demos, offline analysis, or getting the full pipeline working before a Reddit API application comes through.
 
 Pick the "data source" when creating a run in the frontend; both share the exact same downstream analysis/judgment/summary logic.
@@ -120,7 +122,8 @@ Open `http://localhost:5173`.
 
 1. On the home page, click "New Run" and fill in the product category (required), keywords, target subreddits, max iterations, and target evidence count.
 2. Choose a "Data source":
-   - **Reddit API**: requires Reddit credentials configured in `.env`. If they're missing, the page shows a warning and suggests switching to JSON upload.
+   - **Reddit API**: requires Reddit credentials configured in `.env`. If they're missing, the page shows a warning and suggests switching to the scraper or JSON upload.
+   - **Reddit scraper**: no credentials required, but unofficial and rate-limited — see the warning above.
    - **JSON upload**: upload a JSON array of Reddit posts/comments (a format example is shown on the page). No Reddit credentials required.
 3. After submitting, you land on the run detail page, which polls the backend every 2 seconds and shows the agent's thought / search / observation / sufficiency-check steps live.
 4. Once the status becomes "Completed", click "View merchant report" to see pain points, feature requests, praise, competitor mentions, and sentiment breakdown grouped by aspect, plus recommended product-improvement actions.
