@@ -466,6 +466,10 @@ def summarize(run_id: str, product_category: str, collected: list[Evidence], llm
         sentiment_breakdown=sentiment_breakdown,
         recommended_actions=narrative["recommended_actions"],
         summary_markdown=narrative["summary_markdown"],
+        subreddits=sorted({item.subreddit for item in collected}),
+        subreddit_counts=dict(Counter(item.subreddit for item in collected)),
+        recommended_actions_zh=narrative["recommended_actions_zh"],
+        summary_markdown_zh=narrative["summary_markdown_zh"],
     )
 
 
@@ -481,6 +485,9 @@ def _aggregate_by_aspect(collected: list[Evidence], insight_type: InsightType) -
             {
                 "aspect": aspect,
                 "count": len(items),
+                "subreddit_count": len({evidence.subreddit for evidence in items}),
+                "avg_confidence": round(sum(evidence.confidence for evidence in items) / len(items), 2),
+                "sentiment_counts": dict(Counter(evidence.sentiment.value for evidence in items)),
                 "example_quotes": [
                     {"quote": evidence.quote, "source_url": evidence.source_url, "subreddit": evidence.subreddit}
                     for evidence in items_sorted[:3]
@@ -503,8 +510,9 @@ def _summarize_llm(
         "You are a senior product analyst preparing a report for a merchant, based on aggregated Reddit evidence "
         "about their product category. Write concrete, specific, actionable recommendations the merchant can use "
         "to improve the product, grounded in the aggregated pain points and feature requests. Also write a short "
-        "markdown summary (a few sections, no more than ~300 words). Respond entirely in English. "
-        "Return only JSON."
+        "markdown summary (a few sections, no more than ~300 words). Write the full report TWICE, once in English "
+        "and once in Simplified Chinese — both genuinely composed in that language with matching content and "
+        "structure, not a translation note or placeholder. Return only JSON."
     )
     user = json.dumps(
         {
@@ -514,17 +522,25 @@ def _summarize_llm(
             "feature_requests": feature_requests[:8],
             "praised_aspects": praised[:5],
             "expected_json": {
-                "recommended_actions": ["3 to 6 concrete, actionable product-improvement recommendations"],
-                "summary_markdown": "a short Markdown-formatted summary report",
+                "recommended_actions_en": ["3 to 6 concrete, actionable product-improvement recommendations, in English"],
+                "recommended_actions_zh": ["the same 3 to 6 recommendations, written in Simplified Chinese"],
+                "summary_markdown_en": "a short Markdown-formatted summary report, in English",
+                "summary_markdown_zh": "the same summary report, written in Simplified Chinese",
             },
         },
         ensure_ascii=False,
     )
     parsed = llm.json_chat(pro_model(), system, user)
-    actions = parsed.get("recommended_actions")
+
+    def _actions(key: str) -> list[str]:
+        value = parsed.get(key)
+        return [str(item) for item in value] if isinstance(value, list) else []
+
     return {
-        "recommended_actions": [str(item) for item in actions] if isinstance(actions, list) else [],
-        "summary_markdown": str(parsed.get("summary_markdown") or ""),
+        "recommended_actions": _actions("recommended_actions_en"),
+        "recommended_actions_zh": _actions("recommended_actions_zh"),
+        "summary_markdown": str(parsed.get("summary_markdown_en") or ""),
+        "summary_markdown_zh": str(parsed.get("summary_markdown_zh") or ""),
     }
 
 
@@ -547,4 +563,32 @@ def _summarize_fallback(product_category: str, pain_points: list[dict[str, Any]]
     lines.append("## Feature Requests")
     for entry in feature_requests[:5]:
         lines.append(f"- **{entry['aspect']}**: {entry['count']} piece(s) of evidence")
-    return {"recommended_actions": actions, "summary_markdown": "\n".join(lines)}
+
+    # Hardcoded, not translated at request time: this path only runs when there's no
+    # DeepSeek key to call in the first place (see summarize()'s caller), so producing
+    # the Chinese version has to be a template too, same as the English one above.
+    actions_zh = [
+        f'"{entry["aspect"]}" 相关反馈量较高({entry["count"]} 条),建议优先调查并改进。'
+        for entry in pain_points[:5]
+    ]
+    actions_zh.extend(
+        f'用户多次提出希望增加"{entry["aspect"]}"功能({entry["count"]} 次提及),建议纳入产品路线图。'
+        for entry in feature_requests[:3]
+    )
+    if not actions_zh:
+        actions_zh = ["收集到的负面反馈或功能请求样本不足,建议扩大搜索范围或延长观察窗口。"]
+    lines_zh = [f"# {product_category} 用户反馈报告(规则兜底,未使用大模型)", ""]
+    lines_zh.append("## 主要痛点")
+    for entry in pain_points[:5]:
+        lines_zh.append(f"- **{entry['aspect']}**:{entry['count']} 条相关证据")
+    lines_zh.append("")
+    lines_zh.append("## 功能请求")
+    for entry in feature_requests[:5]:
+        lines_zh.append(f"- **{entry['aspect']}**:{entry['count']} 条相关证据")
+
+    return {
+        "recommended_actions": actions,
+        "recommended_actions_zh": actions_zh,
+        "summary_markdown": "\n".join(lines),
+        "summary_markdown_zh": "\n".join(lines_zh),
+    }

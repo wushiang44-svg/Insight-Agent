@@ -8,8 +8,11 @@ from .registry import build_collector, register_collector
 # review platforms, ...): write a collectors/<name>.py implementing Collector
 # and register it there, then import it here. Nothing in react_agent.py or
 # run_manager.py needs to change.
+from . import amazon as _amazon  # noqa: F401
 from . import json_upload as _json_upload  # noqa: F401
 from . import reddit as _reddit  # noqa: F401
+from . import scraper as _scraper  # noqa: F401
+from . import youtube as _youtube  # noqa: F401
 
 __all__ = [
     "Collector",

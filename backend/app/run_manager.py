@@ -50,6 +50,7 @@ class RunManager:
 
     def _run(self, run_id: str, stop_event: threading.Event) -> None:
         storage = Storage(self.db_path)
+        collector = None
         try:
             storage.migrate()
             run = storage.get_run(run_id)
@@ -62,4 +63,10 @@ class RunManager:
             # run_react_loop already persists RunStatus.FAILED with the error before re-raising.
             pass
         finally:
+            # Not every Collector holds a resource worth releasing (e.g. RedditCollector
+            # doesn't), so `close` isn't part of the Collector protocol — duck-type it
+            # instead of forcing every implementation to grow a no-op method.
+            close = getattr(collector, "close", None)
+            if callable(close):
+                close()
             storage.close()

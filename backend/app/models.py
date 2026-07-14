@@ -48,7 +48,10 @@ class DataSource(StrEnum):
     else needs to change."""
 
     REDDIT_API = "reddit_api"
+    REDDIT_SCRAPER = "reddit_scraper"
     JSON_UPLOAD = "json_upload"
+    AMAZON = "amazon"
+    YOUTUBE = "youtube"
 
 
 @dataclass(slots=True)
@@ -135,3 +138,14 @@ class Report:
     sentiment_breakdown: dict[str, int]
     recommended_actions: list[str]
     summary_markdown: str
+    subreddits: list[str]
+    subreddit_counts: dict[str, int]
+    # Chinese counterparts of the two narrative (LLM-written) fields above, generated
+    # alongside the English version in the same call — not translated after the fact.
+    # Empty on reports generated before this field existed, or by the no-LLM-key
+    # fallback narrative (see react_agent._summarize_fallback for its own bilingual
+    # template, which *is* populated even without an LLM). Every other field
+    # (aspects, quotes, source URLs) is language-agnostic or is a direct customer
+    # quote that's deliberately never translated.
+    recommended_actions_zh: list[str] = field(default_factory=list)
+    summary_markdown_zh: str = ""

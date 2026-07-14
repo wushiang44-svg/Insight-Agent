@@ -6,7 +6,9 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from .collectors.amazon import AmazonCollector
 from .collectors.reddit import RedditCollector
+from .collectors.youtube import YoutubeCollector
 from .llm import DeepSeekClient
 from .models import DataSource, RunStatus
 from .run_manager import RunManager
@@ -36,6 +38,8 @@ class CreateRunRequest(BaseModel):
 def get_config() -> dict:
     return {
         "reddit_configured": RedditCollector().available(),
+        "amazon_configured": AmazonCollector().available(),
+        "youtube_configured": YoutubeCollector().available(),
         "deepseek_configured": DeepSeekClient().available(),
     }
 

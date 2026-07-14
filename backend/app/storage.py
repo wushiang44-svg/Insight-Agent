@@ -103,7 +103,9 @@ class Storage:
                 competitor_mentions TEXT NOT NULL,
                 sentiment_breakdown TEXT NOT NULL,
                 recommended_actions TEXT NOT NULL,
-                summary_markdown TEXT NOT NULL
+                summary_markdown TEXT NOT NULL,
+                subreddits TEXT NOT NULL DEFAULT '[]',
+                subreddit_counts TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS run_uploads (
@@ -114,6 +116,22 @@ class Storage:
         )
         try:
             self.conn.execute("ALTER TABLE runs ADD COLUMN data_source TEXT NOT NULL DEFAULT 'reddit_api'")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            self.conn.execute("ALTER TABLE reports ADD COLUMN subreddits TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            self.conn.execute("ALTER TABLE reports ADD COLUMN subreddit_counts TEXT NOT NULL DEFAULT '{}'")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            self.conn.execute("ALTER TABLE reports ADD COLUMN recommended_actions_zh TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            self.conn.execute("ALTER TABLE reports ADD COLUMN summary_markdown_zh TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # column already exists on databases created after this migration was added
         self.conn.commit()
@@ -346,8 +364,9 @@ class Storage:
             """
             INSERT OR REPLACE INTO reports (
                 run_id, generated_at, top_pain_points, feature_requests, praised_aspects,
-                competitor_mentions, sentiment_breakdown, recommended_actions, summary_markdown
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                competitor_mentions, sentiment_breakdown, recommended_actions, summary_markdown,
+                subreddits, subreddit_counts, recommended_actions_zh, summary_markdown_zh
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 report.run_id,
@@ -359,6 +378,10 @@ class Storage:
                 json.dumps(report.sentiment_breakdown),
                 json.dumps(report.recommended_actions),
                 report.summary_markdown,
+                json.dumps(report.subreddits),
+                json.dumps(report.subreddit_counts),
+                json.dumps(report.recommended_actions_zh),
+                report.summary_markdown_zh,
             ),
         )
         self.conn.commit()
@@ -377,4 +400,8 @@ class Storage:
             sentiment_breakdown=json.loads(row["sentiment_breakdown"]),
             recommended_actions=json.loads(row["recommended_actions"]),
             summary_markdown=row["summary_markdown"],
+            subreddits=json.loads(row["subreddits"]),
+            subreddit_counts=json.loads(row["subreddit_counts"]),
+            recommended_actions_zh=json.loads(row["recommended_actions_zh"]) if row["recommended_actions_zh"] else [],
+            summary_markdown_zh=row["summary_markdown_zh"] or "",
         )
