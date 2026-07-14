@@ -1,7 +1,7 @@
 [project]
-name = "reddit-insight-agent"
+name = "voc-insight-agent"
 version = "0.1.0"
-description = "ReAct agent that mines Reddit for product feedback and reports it to merchants"
+description = "ReAct agent that mines Reddit, Amazon, and YouTube for product feedback and reports it to merchants"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

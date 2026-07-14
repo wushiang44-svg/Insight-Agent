@@ -11,7 +11,7 @@ type Dict = Record<string, string>;
 // English text lives in `en` like any other language, so nothing is privileged
 // as "the real string" that others are translated from.
 const en: Dict = {
-  "app.title": "Reddit Product Feedback Insight Agent",
+  "app.title": "VOC Insight Agent",
   "nav.newRun": "+ New Run",
 
   "runs.title": "Research Runs",
@@ -188,7 +188,7 @@ const en: Dict = {
 };
 
 const zh: Dict = {
-  "app.title": "Reddit 产品反馈洞察助手",
+  "app.title": "VOC 客户之声洞察助手",
   "nav.newRun": "+ 新建任务",
 
   "runs.title": "研究任务",

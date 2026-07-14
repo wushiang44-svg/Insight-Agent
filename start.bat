@@ -2,10 +2,10 @@
 cd /d %~dp0
 
 echo Starting backend on http://127.0.0.1:8000 ...
-start "Reddit Insight Agent - Backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
+start "VOC Insight Agent - Backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
 
 echo Starting frontend on http://localhost:5173 ...
-start "Reddit Insight Agent - Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+start "VOC Insight Agent - Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo Waiting for both servers to come up...
 timeout /t 6 /nobreak >nul
