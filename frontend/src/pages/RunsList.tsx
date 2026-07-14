@@ -3,13 +3,15 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import type { RunRecord } from "../api";
 import { StatusBadge } from "../components/StatusBadge";
+import { useLanguage } from "../lib/i18n";
+import { useSourceMeta } from "../lib/sources";
 
-const DATA_SOURCE_LABELS: Record<RunRecord["data_source"], string> = {
-  reddit_api: "Reddit API",
-  json_upload: "JSON Upload",
-};
+function DataSourceCell({ dataSource }: { dataSource: RunRecord["data_source"] }) {
+  return <td>{useSourceMeta(dataSource).label}</td>;
+}
 
 export function RunsList() {
+  const { t } = useLanguage();
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,47 +33,47 @@ export function RunsList() {
   return (
     <div className="page">
       <div className="page-header">
-        <h1>Research Runs</h1>
+        <h1>{t("runs.title")}</h1>
         <Link className="button-link" to="/new">
-          + New Run
+          {t("nav.newRun")}
         </Link>
       </div>
       {error && <p className="error">{error}</p>}
-      {runs === null && !error && <p className="muted">Loading...</p>}
-      {runs !== null && runs.length === 0 && (
-        <p className="muted">No research runs yet. Click the button above to start your first one.</p>
-      )}
+      {runs === null && !error && <p className="muted">{t("runs.loading")}</p>}
+      {runs !== null && runs.length === 0 && <p className="muted">{t("runs.empty")}</p>}
       {runs !== null && runs.length > 0 && (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Product Category</th>
-              <th>Data Source</th>
-              <th>Status</th>
-              <th>Iterations</th>
-              <th>Evidence</th>
-              <th>Created At</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((run) => (
-              <tr key={run.run_id}>
-                <td>
-                  <Link to={`/runs/${run.run_id}`}>{run.product_category}</Link>
-                </td>
-                <td>{DATA_SOURCE_LABELS[run.data_source]}</td>
-                <td>
-                  <StatusBadge status={run.status} />
-                </td>
-                <td>
-                  {run.iteration_count} / {run.max_iterations}
-                </td>
-                <td>{run.evidence_count}</td>
-                <td>{run.created_at}</td>
+        <div className="card table-scroll">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("runs.col.productCategory")}</th>
+                <th>{t("runs.col.dataSource")}</th>
+                <th>{t("runs.col.status")}</th>
+                <th>{t("runs.col.iterations")}</th>
+                <th>{t("runs.col.evidence")}</th>
+                <th>{t("runs.col.createdAt")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {runs.map((run) => (
+                <tr key={run.run_id}>
+                  <td>
+                    <Link to={`/runs/${run.run_id}`}>{run.product_category}</Link>
+                  </td>
+                  <DataSourceCell dataSource={run.data_source} />
+                  <td>
+                    <StatusBadge status={run.status} />
+                  </td>
+                  <td>
+                    {run.iteration_count} / {run.max_iterations}
+                  </td>
+                  <td>{run.evidence_count}</td>
+                  <td>{run.created_at}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

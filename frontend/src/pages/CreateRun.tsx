@@ -3,6 +3,10 @@ import type { ChangeEvent, FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { AppConfig, DataSource } from "../api";
+import { useLanguage } from "../lib/i18n";
+import { useSourceMeta } from "../lib/sources";
+
+const SOURCE_OPTIONS: DataSource[] = ["reddit_api", "reddit_scraper", "amazon", "youtube", "json_upload"];
 
 function parseList(value: string): string[] {
   return value
@@ -26,6 +30,7 @@ const SAMPLE_JSON = `[
 ]`;
 
 export function CreateRun() {
+  const { t } = useLanguage();
   const navigate = useNavigate();
   const [productCategory, setProductCategory] = useState("");
   const [keywords, setKeywords] = useState("");
@@ -75,11 +80,11 @@ export function CreateRun() {
     event.preventDefault();
     setError(null);
     if (!productCategory.trim()) {
-      setError("Please enter a product category");
+      setError(t("create.error.noCategory"));
       return;
     }
     if (dataSource === "json_upload" && uploadedItems.length === 0) {
-      setError("JSON upload mode requires selecting a JSON file first");
+      setError(t("create.error.noUpload"));
       return;
     }
     setSubmitting(true);
@@ -103,84 +108,93 @@ export function CreateRun() {
 
   const showRedditWarning = dataSource === "reddit_api" && config !== null && !config.reddit_configured;
 
+  const selectedMeta = useSourceMeta(dataSource);
+  // Reddit's "not configured" case has its own, more detailed message above (approval
+  // process, alternatives) — this generic one covers amazon/youtube instead.
+  const showSourceWarning =
+    dataSource !== "reddit_api" &&
+    config !== null &&
+    selectedMeta.configKey !== undefined &&
+    !config[selectedMeta.configKey];
+  const notConfiguredHint = dataSource === "amazon" ? t("create.hint.amazon") : t("create.hint.notInstalled");
+
   return (
     <div className="page">
-      <h1>New Research Run</h1>
-      <p className="muted">
-        Enter the product category you want to research. The agent will keep searching, filtering, and
-        analyzing relevant posts and comments, then generate a merchant-readable product improvement report
-        once it has collected enough information.
-      </p>
+      <h1>{t("create.title")}</h1>
+      <p className="muted">{t("create.intro")}</p>
       <form className="card form" onSubmit={handleSubmit}>
         <label>
-          Product category *
+          {t("create.productCategory")}
           <input
             value={productCategory}
             onChange={(event) => setProductCategory(event.target.value)}
-            placeholder="e.g. wireless earbuds"
+            placeholder={t("create.productCategory.placeholder")}
           />
         </label>
 
         <div>
-          <div style={{ marginBottom: 6, fontSize: 14, color: "var(--text-h)" }}>Data source</div>
-          <label style={{ flexDirection: "row", alignItems: "center", gap: 6, display: "flex" }}>
-            <input
-              type="radio"
-              name="data_source"
-              checked={dataSource === "reddit_api"}
-              onChange={() => setDataSource("reddit_api")}
-            />
-            Reddit API (live search)
-          </label>
-          <label style={{ flexDirection: "row", alignItems: "center", gap: 6, display: "flex", marginTop: 4 }}>
-            <input
-              type="radio"
-              name="data_source"
-              checked={dataSource === "json_upload"}
-              onChange={() => setDataSource("json_upload")}
-            />
-            JSON upload (offline / demo data)
-          </label>
+          <div className="field-group-label">{t("create.dataSource")}</div>
+          <div className="radio-group">
+            {SOURCE_OPTIONS.map((option) => (
+              <label className="radio-option" key={option}>
+                <input
+                  type="radio"
+                  name="data_source"
+                  checked={dataSource === option}
+                  onChange={() => setDataSource(option)}
+                />
+                {t(`create.source.${option}`)}
+              </label>
+            ))}
+          </div>
         </div>
 
-        {showRedditWarning && (
-          <p className="error">
-            No Reddit API credentials detected — the Reddit Data API currently requires an approval process
-            that may take a while. Consider switching to "JSON upload" mode to try the full flow with prepared
-            sample data first.
-          </p>
+        {showRedditWarning && <p className="error">{t("create.redditWarning")}</p>}
+
+        {showSourceWarning && (
+          <p className="error">{t("create.sourceWarning", { source: selectedMeta.label, hint: notConfiguredHint })}</p>
         )}
+
+        {dataSource === "reddit_scraper" && <p className="muted">{t("create.note.reddit_scraper")}</p>}
+
+        {dataSource === "amazon" && <p className="muted">{t("create.note.amazon")}</p>}
+
+        {dataSource === "youtube" && <p className="muted">{t("create.note.youtube")}</p>}
 
         {dataSource === "json_upload" && (
           <div>
             <label>
-              Upload a JSON file (array of Reddit posts/comments)
+              {t("create.upload.label")}
               <input type="file" accept="application/json,.json" onChange={handleFileChange} />
             </label>
             {uploadedFileName && (
-              <p className="muted">Selected {uploadedFileName}, {uploadedItems.length} item(s).</p>
+              <p className="muted">{t("create.upload.selected", { name: uploadedFileName, count: uploadedItems.length })}</p>
             )}
             {uploadError && <p className="error">{uploadError}</p>}
-            <details>
-              <summary className="muted" style={{ cursor: "pointer" }}>
-                View JSON format example
-              </summary>
+            <details className="tech-details">
+              <summary>{t("create.upload.viewExample")}</summary>
               <pre className="trace-step-payload">{SAMPLE_JSON}</pre>
             </details>
           </div>
         )}
 
         <label>
-          Keywords (optional, comma-separated)
-          <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="battery, comfort" />
+          {t("create.keywords")}
+          <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder={t("create.keywords.placeholder")} />
         </label>
-        <label>
-          Target subreddits (optional, comma-separated, without r/)
-          <input value={subreddits} onChange={(event) => setSubreddits(event.target.value)} placeholder="headphones, gadgets" />
-        </label>
+        {(dataSource === "reddit_api" || dataSource === "reddit_scraper") && (
+          <label>
+            {t("create.subreddits")}
+            <input
+              value={subreddits}
+              onChange={(event) => setSubreddits(event.target.value)}
+              placeholder={t("create.subreddits.placeholder")}
+            />
+          </label>
+        )}
         <div className="form-row">
           <label>
-            Max iterations
+            {t("create.maxIterations")}
             <input
               type="number"
               min={1}
@@ -190,7 +204,7 @@ export function CreateRun() {
             />
           </label>
           <label>
-            Target evidence count
+            {t("create.targetEvidence")}
             <input
               type="number"
               min={1}
@@ -202,7 +216,7 @@ export function CreateRun() {
         </div>
         {error && <p className="error">{error}</p>}
         <button type="submit" disabled={submitting}>
-          {submitting ? "Creating..." : "Start Agent"}
+          {submitting ? t("create.submitting") : t("create.submit")}
         </button>
       </form>
     </div>

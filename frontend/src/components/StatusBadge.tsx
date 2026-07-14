@@ -1,14 +1,7 @@
 import type { RunStatus } from "../api";
-
-const LABELS: Record<RunStatus, string> = {
-  planning: "Planning",
-  searching: "Searching",
-  summarizing: "Summarizing",
-  completed: "Completed",
-  failed: "Failed",
-  stopped: "Stopped",
-};
+import { useLanguage } from "../lib/i18n";
 
 export function StatusBadge({ status }: { status: RunStatus }) {
-  return <span className={`status-badge status-${status}`}>{LABELS[status]}</span>;
+  const { t } = useLanguage();
+  return <span className={`status-badge status-${status}`}>{t(`status.${status}`)}</span>;
 }

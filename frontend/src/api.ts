@@ -15,7 +15,7 @@ export type StepType =
   | "sufficiency_check"
   | "summary";
 
-export type DataSource = "reddit_api" | "json_upload";
+export type DataSource = "reddit_api" | "reddit_scraper" | "json_upload" | "amazon" | "youtube";
 
 export interface RunRecord {
   run_id: string;
@@ -36,6 +36,8 @@ export interface RunRecord {
 
 export interface AppConfig {
   reddit_configured: boolean;
+  amazon_configured: boolean;
+  youtube_configured: boolean;
   deepseek_configured: boolean;
 }
 
@@ -63,6 +65,9 @@ export interface ExampleQuote {
 export interface AspectGroup {
   aspect: string;
   count: number;
+  subreddit_count?: number;
+  avg_confidence?: number;
+  sentiment_counts?: Record<string, number>;
   example_quotes: ExampleQuote[];
 }
 
@@ -76,6 +81,10 @@ export interface Report {
   sentiment_breakdown: Record<string, number>;
   recommended_actions: string[];
   summary_markdown: string;
+  subreddits: string[];
+  subreddit_counts: Record<string, number>;
+  recommended_actions_zh: string[];
+  summary_markdown_zh: string;
 }
 
 export interface CreateRunInput {
