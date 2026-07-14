@@ -52,7 +52,8 @@ JSON.stringify(
     title: el.querySelector('[data-hook="review-title"]')?.textContent?.trim() || null,
     date: el.querySelector('[data-hook="review-date"]')?.textContent?.trim() || null,
     body: el.querySelector('[data-hook="review-body"]')?.textContent?.trim() || null,
-    helpful: el.querySelector('[data-hook="helpful-vote-statement"]')?.textContent?.trim() || null
+    helpful: el.querySelector('[data-hook="helpful-vote-statement"]')?.textContent?.trim() || null,
+    verified: !!el.querySelector('[data-hook="avp-badge"]')
   }))
 )
 """
@@ -209,6 +210,14 @@ def _normalize_review(review: dict[str, Any], review_id: str, body: str, asin: s
     rating_match = _RATING_RE.search(str(review.get("rating") or ""))
     rating = rating_match.group(1) if rating_match else "?"
     title = _TITLE_RATING_PREFIX_RE.sub("", str(review.get("title") or "").strip()).strip() or "(no title)"
+    # Marked, not filtered: folded into `body` (rather than dropping unverified
+    # reviews, or adding a dedicated CollectedItem/Evidence column) so the signal
+    # reaches the LLM relevance/quality pass and is visible in report quotes,
+    # without a schema change or silently losing evidence. Amazon's own "Verified
+    # Purchase" badge is a much stronger authenticity signal than anything else
+    # available here (there's no reviewer address exposed to compare against a
+    # merchant's shipping data — Amazon never surfaces that to third parties).
+    verification = "Verified Purchase" if review.get("verified") else "Not verified"
     return CollectedItem(
         source_url=f"https://www.amazon.com/product-reviews/{asin}#{review_id}",
         subreddit=(product_title.strip() or asin)[:80],
@@ -216,7 +225,7 @@ def _normalize_review(review: dict[str, Any], review_id: str, body: str, asin: s
         post_id=asin,
         comment_id=review_id,
         title=title,
-        body=f"Rating: {rating}/5\n\n{body}",
+        body=f"Rating: {rating}/5 | {verification}\n\n{body}",
         score=_parse_helpful_count(review.get("helpful")),
         comment_count=0,
         created_at=_parse_review_date(review.get("date")),
