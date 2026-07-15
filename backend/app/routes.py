@@ -105,6 +105,31 @@ def stop_run(run_id: str) -> dict:
     return {"stop_requested": stopped}
 
 
+@router.get("/runs/{run_id}/claims")
+def get_claims(run_id: str) -> list[dict]:
+    storage = _storage()
+    try:
+        run = storage.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        # Pre-Phase-1 runs simply have zero claims -- a valid state, not an error.
+        claims = storage.list_claims(run_id)
+        evidence_by_id = {evidence.evidence_id: evidence for evidence in storage.list_evidence(run_id)}
+        results = []
+        for claim in claims:
+            payload = asdict(claim)
+            # `statement` is an AI-normalized interpretation, never the customer's own
+            # words -- these two fields carry the real, untouched original text so API
+            # consumers never have to (and never should) present `statement` as a quote.
+            source_evidence = evidence_by_id.get(claim.evidence_id)
+            payload["original_source_url"] = source_evidence.source_url if source_evidence else None
+            payload["original_excerpt"] = source_evidence.quote if source_evidence else None
+            results.append(payload)
+        return results
+    finally:
+        storage.close()
+
+
 @router.get("/runs/{run_id}/report")
 def get_report(run_id: str) -> dict:
     storage = _storage()

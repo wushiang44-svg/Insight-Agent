@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
+    Claim,
+    ClaimType,
     DataSource,
     Evidence,
     InsightType,
@@ -112,6 +114,25 @@ class Storage:
                 run_id TEXT PRIMARY KEY,
                 items TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS claims (
+                claim_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                evidence_id TEXT NOT NULL,
+                claim_type TEXT NOT NULL,
+                aspect_raw TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                sentiment TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                extraction_method TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                subject TEXT,
+                explicit_request TEXT,
+                severity REAL,
+                canonical_category TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_claims_run ON claims(run_id);
+            CREATE INDEX IF NOT EXISTS idx_claims_evidence ON claims(evidence_id);
             """
         )
         try:
@@ -132,6 +153,13 @@ class Storage:
             pass  # column already exists on databases created after this migration was added
         try:
             self.conn.execute("ALTER TABLE reports ADD COLUMN summary_markdown_zh TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            # Runs created before Phase 1 (Claim extraction) default to "v1" (legacy
+            # aspect-only pipeline) — they simply have zero rows in `claims`, which is
+            # a valid state, not an error. New runs are created with "v2" explicitly.
+            self.conn.execute("ALTER TABLE runs ADD COLUMN pipeline_version TEXT NOT NULL DEFAULT 'v1'")
         except sqlite3.OperationalError:
             pass  # column already exists on databases created after this migration was added
         self.conn.commit()
@@ -164,14 +192,15 @@ class Storage:
             created_at=now,
             updated_at=now,
             data_source=data_source,
+            pipeline_version="v2",
         )
         self.conn.execute(
             """
             INSERT INTO runs (
                 run_id, product_category, keywords, target_subreddits, status,
                 iteration_count, max_iterations, min_evidence_target, evidence_count,
-                created_at, updated_at, data_source, stop_reason, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, data_source, stop_reason, error, pipeline_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.run_id,
@@ -188,6 +217,7 @@ class Storage:
                 run.data_source.value,
                 run.stop_reason,
                 run.error,
+                run.pipeline_version,
             ),
         )
         self.conn.commit()
@@ -237,6 +267,7 @@ class Storage:
             data_source=DataSource(row["data_source"]),
             stop_reason=row["stop_reason"],
             error=row["error"],
+            pipeline_version=row["pipeline_version"] if "pipeline_version" in row.keys() else "v1",
         )
 
     # ------------------------------------------------------------------
@@ -404,4 +435,104 @@ class Storage:
             subreddit_counts=json.loads(row["subreddit_counts"]),
             recommended_actions_zh=json.loads(row["recommended_actions_zh"]) if row["recommended_actions_zh"] else [],
             summary_markdown_zh=row["summary_markdown_zh"] or "",
+        )
+
+    # ------------------------------------------------------------------
+    # Claims
+    # ------------------------------------------------------------------
+
+    def save_claim(self, claim: Claim) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO claims (
+                claim_id, run_id, evidence_id, claim_type, aspect_raw, statement,
+                sentiment, confidence, extraction_method, created_at, subject,
+                explicit_request, severity, canonical_category
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                claim.claim_id,
+                claim.run_id,
+                claim.evidence_id,
+                claim.claim_type.value,
+                claim.aspect_raw,
+                claim.statement,
+                claim.sentiment.value,
+                claim.confidence,
+                claim.extraction_method,
+                claim.created_at,
+                claim.subject,
+                claim.explicit_request,
+                claim.severity,
+                claim.canonical_category,
+            ),
+        )
+        self.conn.commit()
+
+    def replace_claims_for_evidence(self, evidence_id: str, claims: list[Claim]) -> None:
+        """Deletes all existing claims for `evidence_id`, then inserts `claims`, in one
+        transaction. This is the only safe way to (re-)store claims for a piece of
+        evidence: call it ONLY after extraction has already succeeded (see
+        pipeline/claims.py's `ClaimExtractionResult.succeeded`) — never call it on a
+        failed extraction, or a transient LLM/fallback failure would silently erase
+        claims a previous successful run already stored. An empty `claims` list is a
+        legitimate "extraction succeeded, found nothing" result and does clear
+        whatever was there before."""
+        with self.conn:
+            self.conn.execute("DELETE FROM claims WHERE evidence_id = ?", (evidence_id,))
+            for claim in claims:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO claims (
+                        claim_id, run_id, evidence_id, claim_type, aspect_raw, statement,
+                        sentiment, confidence, extraction_method, created_at, subject,
+                        explicit_request, severity, canonical_category
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        claim.claim_id,
+                        claim.run_id,
+                        claim.evidence_id,
+                        claim.claim_type.value,
+                        claim.aspect_raw,
+                        claim.statement,
+                        claim.sentiment.value,
+                        claim.confidence,
+                        claim.extraction_method,
+                        claim.created_at,
+                        claim.subject,
+                        claim.explicit_request,
+                        claim.severity,
+                        claim.canonical_category,
+                    ),
+                )
+
+    def list_claims(self, run_id: str) -> list[Claim]:
+        rows = self.conn.execute(
+            "SELECT * FROM claims WHERE run_id = ? ORDER BY created_at ASC", (run_id,)
+        ).fetchall()
+        return [self._row_to_claim(row) for row in rows]
+
+    def list_claims_for_evidence(self, evidence_id: str) -> list[Claim]:
+        rows = self.conn.execute(
+            "SELECT * FROM claims WHERE evidence_id = ? ORDER BY created_at ASC", (evidence_id,)
+        ).fetchall()
+        return [self._row_to_claim(row) for row in rows]
+
+    def _row_to_claim(self, row: sqlite3.Row) -> Claim:
+        return Claim(
+            claim_id=row["claim_id"],
+            run_id=row["run_id"],
+            evidence_id=row["evidence_id"],
+            claim_type=ClaimType(row["claim_type"]),
+            aspect_raw=row["aspect_raw"],
+            statement=row["statement"],
+            sentiment=Sentiment(row["sentiment"]),
+            confidence=row["confidence"],
+            extraction_method=row["extraction_method"],
+            created_at=row["created_at"],
+            subject=row["subject"],
+            explicit_request=row["explicit_request"],
+            severity=row["severity"],
+            canonical_category=row["canonical_category"],
         )

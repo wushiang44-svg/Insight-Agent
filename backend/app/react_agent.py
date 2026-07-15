@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
 from .collectors.base import Collector
@@ -18,6 +19,7 @@ from .models import (
     TraceEvent,
     utc_now,
 )
+from .pipeline.claims import enable_claim_extraction, extract_claims
 from .storage import Storage
 from .text import (
     classify_insight_type,
@@ -27,6 +29,23 @@ from .text import (
 )
 
 DIMINISHING_RETURNS_WINDOW = 2
+
+
+@dataclass
+class IterationClaimStats:
+    """Structured counts for one iteration's CLAIM_EXTRACTION trace event --
+    kept as a real dataclass (not an ad hoc dict) so the field names are pinned
+    down and RunDetail's stats panel can read exact counts instead of parsing
+    the human-readable trace message."""
+
+    source_items_processed: int = 0
+    items_with_claims: int = 0
+    claims_total: int = 0
+    llm_claims: int = 0
+    fallback_claims: int = 0
+    invalid_claims: int = 0
+    extraction_failures: int = 0
+    extraction_disabled: int = 0
 
 
 def run_react_loop(
@@ -84,6 +103,7 @@ def run_react_loop(
             tried_queries.append({"query": thought["query"], "subreddit": thought["subreddit"]})
 
             new_evidence: list[Evidence] = []
+            claim_stats = IterationClaimStats()
             for item in items:
                 if item.source_url in seen_urls:
                     continue
@@ -95,6 +115,24 @@ def run_react_loop(
                 storage.save_evidence(evidence)
                 new_evidence.append(evidence)
 
+                claim_stats.source_items_processed += 1
+                if not enable_claim_extraction():
+                    claim_stats.extraction_disabled += 1
+                    continue
+                result = extract_claims(run.product_category, evidence, llm)
+                claim_stats.llm_claims += result.stats.llm_claims
+                claim_stats.fallback_claims += result.stats.fallback_claims
+                claim_stats.invalid_claims += result.stats.invalid_claims
+                if result.succeeded:
+                    # Only ever replace on a successful extraction (even an empty one) --
+                    # a failed extraction must never erase claims a previous run stored.
+                    storage.replace_claims_for_evidence(evidence.evidence_id, result.claims)
+                    claim_stats.claims_total += len(result.claims)
+                    if result.claims:
+                        claim_stats.items_with_claims += 1
+                else:
+                    claim_stats.extraction_failures += 1
+
             collected.extend(new_evidence)
             new_counts.append(len(new_evidence))
             trace(
@@ -102,6 +140,18 @@ def run_react_loop(
                 StepType.OBSERVATION,
                 f"Analyzed {len(items)} result(s), kept {len(new_evidence)} relevant item(s) (total {len(collected)})",
                 {"items_analyzed": len(items), "new_evidence": len(new_evidence), "total_evidence": len(collected)},
+            )
+            trace(
+                iteration,
+                StepType.CLAIM_EXTRACTION,
+                (
+                    f"Extracted {claim_stats.claims_total} claim(s) from "
+                    f"{claim_stats.items_with_claims}/{claim_stats.source_items_processed} item(s) "
+                    f"({claim_stats.llm_claims} LLM, {claim_stats.fallback_claims} fallback, "
+                    f"{claim_stats.invalid_claims} invalid skipped, {claim_stats.extraction_failures} failed, "
+                    f"{claim_stats.extraction_disabled} disabled)"
+                ),
+                asdict(claim_stats),
             )
             storage.update_run_progress(run_id, iteration, len(collected), RunStatus.SEARCHING)
 

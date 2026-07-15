@@ -39,7 +39,28 @@ class StepType(StrEnum):
     ACTION_SEARCH = "action_search"
     OBSERVATION = "observation"
     SUFFICIENCY_CHECK = "sufficiency_check"
+    CLAIM_EXTRACTION = "claim_extraction"
     SUMMARY = "summary"
+
+
+class ClaimType(StrEnum):
+    """One atomic claim extracted from a review/comment. See pipeline/claims.py.
+
+    Scoped to Phase 1 (extraction only) of the Customer Demand Intelligence
+    Pipeline — judgment fields (is_customer_need, need_type, reliability_score,
+    ...) deliberately live on future ClaimAssessment/ReliabilityAssessment
+    tables, not here, so this model only owns what Phase 1 actually computes.
+    """
+
+    PROBLEM = "problem"
+    FEATURE_REQUEST = "feature_request"
+    PRAISE = "praise"
+    COMPARISON = "comparison"
+    QUESTION = "question"
+    OBSERVATION = "observation"
+    SHIPPING_ISSUE = "shipping_issue"
+    SELLER_SERVICE_ISSUE = "seller_service_issue"
+    NOISE = "noise"
 
 
 class DataSource(StrEnum):
@@ -70,6 +91,10 @@ class RunRecord:
     data_source: DataSource = DataSource.REDDIT_API
     stop_reason: str | None = None
     error: str | None = None
+    # "v1": legacy aspect-only pipeline (pre-Claim). "v2": runs that also extract
+    # atomic Claims (Customer Demand Intelligence Pipeline, Phase 1+). Existing
+    # DB rows default to "v1" via migration; new runs are created as "v2".
+    pipeline_version: str = "v2"
 
 
 @dataclass(slots=True)
@@ -149,3 +174,32 @@ class Report:
     # quote that's deliberately never translated.
     recommended_actions_zh: list[str] = field(default_factory=list)
     summary_markdown_zh: str = ""
+
+
+@dataclass(slots=True)
+class Claim:
+    """One atomic claim extracted from a single review/comment (Evidence).
+
+    Replaces the "one review = one insight" assumption: a review can produce
+    zero, one, or many Claims. `statement` is an AI-normalized interpretation,
+    never the customer's verbatim words — the original text stays on the
+    parent `Evidence` row (`body`/`quote`/`source_url`), and every Claim links
+    back to it via `evidence_id`. Never render `statement` as if it were a
+    direct quote; pair it with the parent Evidence's own text instead.
+    """
+
+    claim_id: str
+    run_id: str
+    evidence_id: str
+    claim_type: ClaimType
+    aspect_raw: str
+    statement: str
+    sentiment: Sentiment
+    confidence: float
+    extraction_method: str  # "llm" | "fallback_rules"
+    created_at: str = field(default_factory=utc_now)
+    subject: str | None = None
+    explicit_request: str | None = None
+    severity: float | None = None
+    # Nullable; populated by a future clustering phase (Phase 5), not Phase 1.
+    canonical_category: str | None = None

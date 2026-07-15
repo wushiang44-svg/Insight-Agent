@@ -13,7 +13,19 @@ export type StepType =
   | "action_search"
   | "observation"
   | "sufficiency_check"
+  | "claim_extraction"
   | "summary";
+
+export type ClaimType =
+  | "problem"
+  | "feature_request"
+  | "praise"
+  | "comparison"
+  | "question"
+  | "observation"
+  | "shipping_issue"
+  | "seller_service_issue"
+  | "noise";
 
 export type DataSource = "reddit_api" | "reddit_scraper" | "json_upload" | "amazon" | "youtube";
 
@@ -32,6 +44,7 @@ export interface RunRecord {
   data_source: DataSource;
   stop_reason: string | null;
   error: string | null;
+  pipeline_version: string;
 }
 
 export interface AppConfig {
@@ -87,6 +100,27 @@ export interface Report {
   summary_markdown_zh: string;
 }
 
+export interface Claim {
+  claim_id: string;
+  run_id: string;
+  evidence_id: string;
+  claim_type: ClaimType;
+  aspect_raw: string;
+  // AI-normalized interpretation -- never the customer's verbatim words. Pair
+  // with original_excerpt below, never present this as a direct quote.
+  statement: string;
+  sentiment: "positive" | "neutral" | "negative";
+  confidence: number;
+  extraction_method: "llm" | "fallback_rules";
+  created_at: string;
+  subject: string | null;
+  explicit_request: string | null;
+  severity: number | null;
+  canonical_category: string | null;
+  original_source_url: string | null;
+  original_excerpt: string | null;
+}
+
 export interface CreateRunInput {
   product_category: string;
   keywords: string[];
@@ -116,5 +150,6 @@ export const api = {
   getRun: (runId: string) => request<RunDetail>(`/runs/${runId}`),
   stopRun: (runId: string) => request<{ stop_requested: boolean }>(`/runs/${runId}/stop`, { method: "POST" }),
   getReport: (runId: string) => request<Report>(`/runs/${runId}/report`),
+  getClaims: (runId: string) => request<Claim[]>(`/runs/${runId}/claims`),
   getConfig: () => request<AppConfig>("/config"),
 };

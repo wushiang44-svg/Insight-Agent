@@ -9,6 +9,7 @@ const STEP_ICONS: Record<TraceEvent["step_type"], IconName> = {
   action_search: "search",
   observation: "inbox",
   sufficiency_check: "check",
+  claim_extraction: "layers",
   summary: "doc",
 };
 

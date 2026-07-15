@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.collectors.json_upload import JsonUploadCollector
 from app.llm import DeepSeekClient
 from app.models import CollectedItem, DataSource, RunStatus

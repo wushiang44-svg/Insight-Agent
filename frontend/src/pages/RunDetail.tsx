@@ -1,14 +1,50 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
-import type { RunDetail as RunDetailData } from "../api";
+import type { Claim, RunDetail as RunDetailData } from "../api";
+import { KpiCard } from "../components/KpiCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { TraceTimeline } from "../components/TraceTimeline";
+import { translateAspect } from "../lib/aspectTranslations";
 import { useLanguage } from "../lib/i18n";
 import { useSourceMeta } from "../lib/sources";
 
 const ACTIVE_STATUSES = new Set(["planning", "searching", "summarizing"]);
 const POLL_INTERVAL_MS = 2000;
+
+interface ClaimStatsTotals {
+  sourceItemsProcessed: number;
+  itemsWithClaims: number;
+  claimsTotal: number;
+  llmClaims: number;
+  fallbackClaims: number;
+  invalidClaims: number;
+  extractionFailures: number;
+}
+
+function sumClaimStats(detail: RunDetailData): ClaimStatsTotals {
+  const totals: ClaimStatsTotals = {
+    sourceItemsProcessed: 0,
+    itemsWithClaims: 0,
+    claimsTotal: 0,
+    llmClaims: 0,
+    fallbackClaims: 0,
+    invalidClaims: 0,
+    extractionFailures: 0,
+  };
+  for (const event of detail.trace_events) {
+    if (event.step_type !== "claim_extraction") continue;
+    const payload = event.payload;
+    totals.sourceItemsProcessed += Number(payload.source_items_processed ?? 0);
+    totals.itemsWithClaims += Number(payload.items_with_claims ?? 0);
+    totals.claimsTotal += Number(payload.claims_total ?? 0);
+    totals.llmClaims += Number(payload.llm_claims ?? 0);
+    totals.fallbackClaims += Number(payload.fallback_claims ?? 0);
+    totals.invalidClaims += Number(payload.invalid_claims ?? 0);
+    totals.extractionFailures += Number(payload.extraction_failures ?? 0);
+  }
+  return totals;
+}
 
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -20,6 +56,8 @@ export function RunDetail() {
   const { runId } = useParams<{ runId: string }>();
   const [detail, setDetail] = useState<RunDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [claims, setClaims] = useState<Claim[] | null>(null);
+  const [claimsError, setClaimsError] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -34,6 +72,17 @@ export function RunDetail() {
         setError(null);
         if (ACTIVE_STATUSES.has(data.run.status)) {
           timerRef.current = window.setTimeout(poll, POLL_INTERVAL_MS);
+        }
+        if (data.run.pipeline_version === "v2") {
+          try {
+            const claimsData = await api.getClaims(runId!);
+            if (!cancelled) {
+              setClaims(claimsData);
+              setClaimsError(null);
+            }
+          } catch (err) {
+            if (!cancelled) setClaimsError(err instanceof Error ? err.message : String(err));
+          }
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -138,6 +187,85 @@ export function RunDetail() {
 
       <h2>{t("detail.timeline")}</h2>
       <TraceTimeline events={traceEvents} meta={meta} />
+
+      {run.pipeline_version === "v2" && <ClaimExtractionSection detail={detail} claims={claims} claimsError={claimsError} />}
     </div>
+  );
+}
+
+function ClaimExtractionSection({
+  detail,
+  claims,
+  claimsError,
+}: {
+  detail: RunDetailData;
+  claims: Claim[] | null;
+  claimsError: string | null;
+}) {
+  const { t, language } = useLanguage();
+  const stats = sumClaimStats(detail);
+
+  if (stats.sourceItemsProcessed === 0) {
+    return (
+      <section className="card" style={{ marginTop: "var(--space-4)" }}>
+        <h2>{t("detail.claims.title")}</h2>
+        <p className="muted">{t("detail.claims.notStarted")}</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card" style={{ marginTop: "var(--space-4)" }}>
+      <h2>{t("detail.claims.title")}</h2>
+      <div className="kpi-grid">
+        <KpiCard label={t("detail.claims.processedItems")} value={stats.sourceItemsProcessed} />
+        <KpiCard label={t("detail.claims.itemsWithClaims")} value={stats.itemsWithClaims} />
+        <KpiCard label={t("detail.claims.totalClaims")} value={stats.claimsTotal} />
+        <KpiCard label={t("detail.claims.llmClaims")} value={stats.llmClaims} />
+        <KpiCard label={t("detail.claims.fallbackClaims")} value={stats.fallbackClaims} />
+        <KpiCard label={t("detail.claims.invalidClaims")} value={stats.invalidClaims} />
+        <KpiCard label={t("detail.claims.extractionFailures")} value={stats.extractionFailures} />
+      </div>
+
+      <details className="tech-details" style={{ marginTop: "var(--space-4)" }}>
+        <summary>{t("detail.claims.viewClaims", { n: claims?.length ?? 0 })}</summary>
+        {claimsError && <p className="error">{claimsError}</p>}
+        {!claimsError && claims === null && <p className="muted">{t("detail.claims.loading")}</p>}
+        {!claimsError && claims !== null && claims.length === 0 && <p className="muted">{t("detail.claims.empty")}</p>}
+        {!claimsError && claims !== null && claims.length > 0 && (
+          <div className="evidence-groups">
+            {claims.map((claim) => (
+              <div className="evidence-group" key={claim.claim_id} style={{ padding: "var(--space-3)" }}>
+                <div className="evidence-group-body" style={{ display: "block" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+                    <span className="severity-pill" style={{ background: "var(--sev-medium-bg)", color: "var(--sev-medium-fg)" }}>
+                      {t(`claimType.${claim.claim_type}`)}
+                    </span>
+                    <span className="evidence-group-aspect">{translateAspect(claim.aspect_raw, language)}</span>
+                    <span className="muted">{claim.extraction_method === "llm" ? "LLM" : "fallback_rules"}</span>
+                    <span className="muted">{Math.round(claim.confidence * 100)}%</span>
+                  </div>
+                  <div className="evidence-quote">{claim.statement}</div>
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    {t("detail.claims.notVerbatim")}
+                    {claim.original_excerpt && (
+                      <>
+                        {" "}
+                        {t("detail.claims.originalText")} "{claim.original_excerpt}"{" "}
+                        {claim.original_source_url && (
+                          <a href={claim.original_source_url} target="_blank" rel="noreferrer">
+                            {t("detail.claims.viewOriginal")}
+                          </a>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
+    </section>
   );
 }
