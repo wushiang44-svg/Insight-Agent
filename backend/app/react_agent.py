@@ -14,19 +14,13 @@ from .models import (
     InsightType,
     Report,
     RunStatus,
-    Sentiment,
     StepType,
     TraceEvent,
     utc_now,
 )
 from .pipeline.claims import enable_claim_extraction, extract_claims
+from .pipeline.screening import ScreeningResult, screen_item
 from .storage import Storage
-from .text import (
-    classify_insight_type,
-    detect_aspects,
-    detect_sentiment,
-    short_quote,
-)
 
 DIMINISHING_RETURNS_WINDOW = 2
 
@@ -52,6 +46,22 @@ class IterationClaimStats:
     within_review_duplicates_removed: int = 0
     claims_merged: int = 0
     safety_cap_truncations: int = 0
+
+
+@dataclass
+class IterationScreeningStats:
+    """Structured counts for one iteration's SCREENING trace event (Phase 2).
+    is_evidence_worthy is the only hard discard signal; has_product_signal_count
+    is observability only -- it never gates Claim extraction (see
+    pipeline/screening.py's ScreeningResult docstring for why)."""
+
+    items_screened: int = 0
+    evidence_worthy: int = 0
+    discarded: int = 0
+    mixed_content: int = 0
+    has_product_signal_count: int = 0
+    llm_screened: int = 0
+    fallback_screened: int = 0
 
 
 def run_react_loop(
@@ -110,14 +120,31 @@ def run_react_loop(
 
             new_evidence: list[Evidence] = []
             claim_stats = IterationClaimStats()
+            screening_stats = IterationScreeningStats()
             for item in items:
                 if item.source_url in seen_urls:
                     continue
                 seen_urls.add(item.source_url)
-                analysis = analyze_item(run.product_category, item, llm)
-                if not analysis["is_relevant"]:
+                screening = screen_item(run.product_category, item, llm)
+                screening_stats.items_screened += 1
+                if screening.extraction_method == "llm":
+                    screening_stats.llm_screened += 1
+                else:
+                    screening_stats.fallback_screened += 1
+                if screening.is_mixed_content:
+                    screening_stats.mixed_content += 1
+                if screening.has_product_signal:
+                    screening_stats.has_product_signal_count += 1
+                if not screening.is_evidence_worthy:
+                    # The only hard discard point in Phase 2 -- categories were a
+                    # subset of {spam_or_irrelevant, low_information}. Every other
+                    # evidence-worthy item (product/shipping/service, alone or
+                    # mixed) proceeds to extract_claims() below unconditionally --
+                    # has_product_signal is never used to skip that call.
+                    screening_stats.discarded += 1
                     continue
-                evidence = _build_evidence(run_id, iteration, item, analysis)
+                screening_stats.evidence_worthy += 1
+                evidence = _build_evidence(run_id, iteration, item, screening)
                 storage.save_evidence(evidence)
                 new_evidence.append(evidence)
 
@@ -151,6 +178,18 @@ def run_react_loop(
                 StepType.OBSERVATION,
                 f"Analyzed {len(items)} result(s), kept {len(new_evidence)} relevant item(s) (total {len(collected)})",
                 {"items_analyzed": len(items), "new_evidence": len(new_evidence), "total_evidence": len(collected)},
+            )
+            trace(
+                iteration,
+                StepType.SCREENING,
+                (
+                    f"Screened {screening_stats.items_screened} item(s): "
+                    f"{screening_stats.evidence_worthy} evidence-worthy "
+                    f"({screening_stats.mixed_content} mixed content, "
+                    f"{screening_stats.has_product_signal_count} with product signal), "
+                    f"{screening_stats.discarded} discarded (spam/low-information only)"
+                ),
+                asdict(screening_stats),
             )
             trace(
                 iteration,
@@ -295,89 +334,16 @@ def _plan_next_query_fallback(
 
 
 # ---------------------------------------------------------------------------
-# Observe: relevance + structured analysis of one Reddit item
+# Observe: build an Evidence row from one screened item
 # ---------------------------------------------------------------------------
-
-def analyze_item(product_category: str, item: CollectedItem, llm: DeepSeekClient) -> dict[str, Any]:
-    if llm.available():
-        try:
-            return _analyze_item_llm(product_category, item, llm)
-        except Exception:
-            pass
-    return _analyze_item_fallback(item)
+# Phase 2 replaced the old analyze_item()/_analyze_item_llm()/_analyze_item_fallback()
+# (a single binary is_relevant verdict that could silently discard a mixed
+# review's real product signal) with pipeline/screening.py's screen_item() --
+# see that module for the LLM + fallback logic. This section only builds the
+# Evidence row from its ScreeningResult.
 
 
-def _analyze_item_llm(product_category: str, item: CollectedItem, llm: DeepSeekClient) -> dict[str, Any]:
-    system = (
-        "You are an evidence analyst mining Reddit for product feedback on behalf of a merchant. Decide whether "
-        "this post/comment is genuinely about the given product category (not spam, not an unrelated tangent). "
-        "If relevant, classify it and extract one short representative quote (verbatim or lightly trimmed, in the "
-        "original language of the text). Write all reasoning/quote-adjacent text fields in English "
-        "except the quote field, which should stay in the original language. Return only JSON."
-    )
-    user = json.dumps(
-        {
-            "product_category": product_category,
-            "post": {
-                "title": item.title,
-                "body": item.body[:1800],
-                "subreddit": item.subreddit,
-                "item_type": item.item_type,
-                "score": item.score,
-                "search_query": item.search_query,
-            },
-            "expected_json": {
-                "is_relevant": "true only if this is genuine user discussion about the product category",
-                "insight_type": "pain_point | feature_request | comparison | praise | question | noise",
-                "aspect": "short label such as battery, price, durability, shipping, customer_service, quality, comfort, ease_of_use",
-                "sentiment": "negative | neutral | positive",
-                "quote": "short representative quote from the text, original language",
-                "confidence": "0 to 1",
-            },
-        },
-        ensure_ascii=False,
-    )
-    parsed = llm.json_chat(fast_model(), system, user)
-    is_relevant = bool(parsed.get("is_relevant"))
-    if not is_relevant:
-        return {"is_relevant": False}
-    insight_type = str(parsed.get("insight_type") or "noise").strip().lower()
-    if insight_type not in {item.value for item in InsightType}:
-        insight_type = InsightType.NOISE.value
-    sentiment = str(parsed.get("sentiment") or "neutral").strip().lower()
-    if sentiment not in {item.value for item in Sentiment}:
-        sentiment = Sentiment.NEUTRAL.value
-    try:
-        confidence = max(0.0, min(float(parsed.get("confidence", 0.5)), 1.0))
-    except (TypeError, ValueError):
-        confidence = 0.5
-    return {
-        "is_relevant": True,
-        "insight_type": insight_type,
-        "aspect": str(parsed.get("aspect") or "general").strip() or "general",
-        "sentiment": sentiment,
-        "quote": str(parsed.get("quote") or short_quote(f"{item.title} {item.body}")),
-        "confidence": round(confidence, 2),
-    }
-
-
-def _analyze_item_fallback(item: CollectedItem) -> dict[str, Any]:
-    text = f"{item.title}\n{item.body}"
-    aspects = detect_aspects(text)
-    insight_type = classify_insight_type(text)
-    if insight_type == "noise" and not aspects:
-        return {"is_relevant": False}
-    return {
-        "is_relevant": True,
-        "insight_type": insight_type,
-        "aspect": aspects[0] if aspects else "general",
-        "sentiment": detect_sentiment(text),
-        "quote": short_quote(text),
-        "confidence": 0.6 if aspects else 0.35,
-    }
-
-
-def _build_evidence(run_id: str, iteration: int, item: CollectedItem, analysis: dict[str, Any]) -> Evidence:
+def _build_evidence(run_id: str, iteration: int, item: CollectedItem, screening: ScreeningResult) -> Evidence:
     evidence_id = f"ev_{hashlib.sha1((run_id + item.source_url).encode()).hexdigest()[:12]}"
     return Evidence(
         evidence_id=evidence_id,
@@ -393,11 +359,13 @@ def _build_evidence(run_id: str, iteration: int, item: CollectedItem, analysis: 
         created_at=item.created_at,
         fetched_at=utc_now(),
         search_query=item.search_query,
-        insight_type=InsightType(analysis["insight_type"]),
-        aspect=analysis["aspect"],
-        sentiment=Sentiment(analysis["sentiment"]),
-        quote=analysis["quote"],
-        confidence=analysis["confidence"],
+        insight_type=screening.insight_type,
+        aspect=screening.aspect,
+        sentiment=screening.sentiment,
+        quote=screening.quote,
+        confidence=screening.confidence,
+        screening_categories=[c.value for c in screening.categories],
+        is_mixed_content=screening.is_mixed_content,
     )
 
 

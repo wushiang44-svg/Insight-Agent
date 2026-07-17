@@ -22,12 +22,13 @@ _RAW_INGESTION_CEILING = 40
 
 
 def enable_claim_extraction() -> bool:
-    """Kill switch for the second (claim-extraction) LLM call per relevant item.
+    """Kill switch for the second (claim-extraction) LLM call per evidence-worthy item.
 
-    Claim extraction runs in addition to the existing analyze_item() call, not
-    instead of it -- two fast-model calls per relevant item, not one. This flag
-    lets that second call be turned off with no code change if cost becomes a
-    problem, without touching analyze_item()/the legacy aspect-report path.
+    Claim extraction runs in addition to the screening call (screen_item(),
+    pipeline/screening.py), not instead of it -- two fast-model calls per
+    evidence-worthy item, not one. This flag lets that second call be turned
+    off with no code change if cost becomes a problem, without touching
+    screen_item()/the legacy aspect-report path.
     """
     load_dotenv()
     raw = os.environ.get("ENABLE_CLAIM_EXTRACTION", "true").strip().lower()

@@ -8,6 +8,7 @@ const STEP_ICONS: Record<TraceEvent["step_type"], IconName> = {
   thought: "target",
   action_search: "search",
   observation: "inbox",
+  screening: "filter",
   sufficiency_check: "check",
   claim_extraction: "layers",
   summary: "doc",

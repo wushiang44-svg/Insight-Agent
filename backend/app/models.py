@@ -38,9 +38,26 @@ class StepType(StrEnum):
     THOUGHT = "thought"
     ACTION_SEARCH = "action_search"
     OBSERVATION = "observation"
+    SCREENING = "screening"
     SUFFICIENCY_CHECK = "sufficiency_check"
     CLAIM_EXTRACTION = "claim_extraction"
     SUMMARY = "summary"
+
+
+class ScreeningCategory(StrEnum):
+    """What kind of feedback a review/comment is, per Phase 2's screen_item().
+    Multi-label -- a review's ScreeningResult.categories can (and often should)
+    contain more than one of these. Replaces analyze_item()'s single binary
+    is_relevant verdict, which could discard a mixed review's real product
+    signal because the dominant tone read as shipping/service noise. Only
+    SPAM_OR_IRRELEVANT/LOW_INFORMATION-only content is discarded before Claim
+    extraction -- see pipeline/screening.py."""
+
+    PRODUCT_FEEDBACK = "product_feedback"
+    SHIPPING_LOGISTICS = "shipping_logistics"
+    SELLER_SERVICE = "seller_service"
+    SPAM_OR_IRRELEVANT = "spam_or_irrelevant"
+    LOW_INFORMATION = "low_information"
 
 
 class ClaimType(StrEnum):
@@ -92,9 +109,13 @@ class RunRecord:
     stop_reason: str | None = None
     error: str | None = None
     # "v1": legacy aspect-only pipeline (pre-Claim). "v2": runs that also extract
-    # atomic Claims (Customer Demand Intelligence Pipeline, Phase 1+). Existing
-    # DB rows default to "v1" via migration; new runs are created as "v2".
-    pipeline_version: str = "v2"
+    # atomic Claims (Customer Demand Intelligence Pipeline, Phase 1+). "v3": runs
+    # screened by screen_item() (Phase 2) instead of the old binary analyze_item()
+    # gate -- evidence_count/Report contents can genuinely differ from v1/v2 runs
+    # on the same source corpus, since mixed-content reviews that used to be
+    # silently dropped now survive. Existing DB rows keep whatever version they
+    # were created with; new runs are created as "v3".
+    pipeline_version: str = "v3"
 
 
 @dataclass(slots=True)
@@ -140,6 +161,14 @@ class Evidence:
     sentiment: Sentiment
     quote: str
     confidence: float
+    # Phase 2 (review screening): the full multi-label category set screen_item()
+    # assigned, e.g. ["shipping_logistics", "product_feedback"] for a mixed
+    # review. Nullable -- Evidence created before Phase 2 has no screening data.
+    # insight_type/aspect/sentiment above stay populated with equivalent legacy
+    # semantics regardless, so the aggregate Report and check_sufficiency() never
+    # need to know this field exists.
+    screening_categories: list[str] | None = None
+    is_mixed_content: bool = False
 
 
 @dataclass(slots=True)
@@ -203,7 +232,7 @@ class Claim:
     severity: float | None = None
     # A short verbatim span from the parent Evidence's own text that specifically
     # supports THIS claim -- distinct from Evidence.quote (a single quote picked
-    # once for the whole review by the earlier analyze_item() stage, which may not
+    # once for the whole review by the earlier screening stage, which may not
     # relate to any given claim). Nullable: the fallback path only sets it when it
     # can find a matching sentence, and the LLM path nulls it out if the model's
     # claimed excerpt isn't actually a substring of the source text (never trust an

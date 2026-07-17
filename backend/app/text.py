@@ -99,3 +99,37 @@ def find_aspect_excerpt(text: str, aspect: str, limit: int = 220) -> str | None:
         if sentence and pattern.search(sentence):
             return sentence[:limit]
     return None
+
+
+# Phase 2 (review screening) -- which screening category each ASPECT_PATTERNS
+# key represents. Plain strings (matching ScreeningCategory's values), not the
+# enum itself: this module has no project imports and stays a leaf utility;
+# callers (pipeline/screening.py) wrap the result in ScreeningCategory, mirroring
+# how classify_insight_type()'s plain strings get mapped to ClaimType at the
+# call site in pipeline/claims.py rather than here.
+ASPECT_SCREENING_CATEGORY: dict[str, str] = {
+    "battery": "product_feedback",
+    "durability": "product_feedback",
+    "price": "product_feedback",
+    "quality": "product_feedback",
+    "comfort": "product_feedback",
+    "ease_of_use": "product_feedback",
+    "size": "product_feedback",
+    "shipping": "shipping_logistics",
+    "packaging": "shipping_logistics",
+    "customer_service": "seller_service",
+}
+
+
+def screening_categories_for_aspects(aspects: list[str]) -> list[str]:
+    """Maps detect_aspects()'s full match list to their screening categories,
+    deduped, preserving first-seen order. detect_aspects() already returns
+    every matched aspect (not just the first) -- this just groups them by what
+    kind of feedback they represent, so a mixed review (matches both `shipping`
+    and `battery`) correctly yields both categories instead of one."""
+    seen: list[str] = []
+    for aspect in aspects:
+        category = ASPECT_SCREENING_CATEGORY.get(aspect)
+        if category and category not in seen:
+            seen.append(category)
+    return seen

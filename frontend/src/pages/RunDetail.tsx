@@ -12,6 +12,14 @@ import { useSourceMeta } from "../lib/sources";
 const ACTIVE_STATUSES = new Set(["planning", "searching", "summarizing"]);
 const POLL_INTERVAL_MS = 2000;
 
+// "v1" is the only pipeline_version that predates the Claims table entirely --
+// every later version ("v2", "v3", ...) has Claims. Checking !== "v1" instead of
+// pinning to one exact version keeps this from silently breaking again the next
+// time pipeline_version is bumped (as it was v2 -> v3 for Phase 2 screening).
+function hasClaimsPipeline(pipelineVersion: string): boolean {
+  return pipelineVersion !== "v1";
+}
+
 interface ClaimStatsTotals {
   sourceItemsProcessed: number;
   itemsWithClaims: number;
@@ -86,7 +94,7 @@ export function RunDetail() {
         if (ACTIVE_STATUSES.has(data.run.status)) {
           timerRef.current = window.setTimeout(poll, POLL_INTERVAL_MS);
         }
-        if (data.run.pipeline_version === "v2") {
+        if (hasClaimsPipeline(data.run.pipeline_version)) {
           try {
             const claimsData = await api.getClaims(runId!);
             if (!cancelled) {
@@ -201,8 +209,57 @@ export function RunDetail() {
       <h2>{t("detail.timeline")}</h2>
       <TraceTimeline events={traceEvents} meta={meta} />
 
-      {run.pipeline_version === "v2" && <ClaimExtractionSection detail={detail} claims={claims} claimsError={claimsError} />}
+      {hasClaimsPipeline(run.pipeline_version) && <ScreeningSection detail={detail} />}
+      {hasClaimsPipeline(run.pipeline_version) && <ClaimExtractionSection detail={detail} claims={claims} claimsError={claimsError} />}
     </div>
+  );
+}
+
+interface ScreeningStatsTotals {
+  itemsScreened: number;
+  evidenceWorthy: number;
+  discarded: number;
+  mixedContent: number;
+  hasProductSignalCount: number;
+}
+
+function sumScreeningStats(detail: RunDetailData): ScreeningStatsTotals {
+  const totals: ScreeningStatsTotals = {
+    itemsScreened: 0,
+    evidenceWorthy: 0,
+    discarded: 0,
+    mixedContent: 0,
+    hasProductSignalCount: 0,
+  };
+  for (const event of detail.trace_events) {
+    if (event.step_type !== "screening") continue;
+    const payload = event.payload;
+    totals.itemsScreened += Number(payload.items_screened ?? 0);
+    totals.evidenceWorthy += Number(payload.evidence_worthy ?? 0);
+    totals.discarded += Number(payload.discarded ?? 0);
+    totals.mixedContent += Number(payload.mixed_content ?? 0);
+    totals.hasProductSignalCount += Number(payload.has_product_signal_count ?? 0);
+  }
+  return totals;
+}
+
+function ScreeningSection({ detail }: { detail: RunDetailData }) {
+  const { t } = useLanguage();
+  const stats = sumScreeningStats(detail);
+
+  if (stats.itemsScreened === 0) return null;
+
+  return (
+    <section className="card" style={{ marginTop: "var(--space-4)" }}>
+      <h2>{t("detail.screening.title")}</h2>
+      <div className="kpi-grid">
+        <KpiCard label={t("detail.screening.itemsScreened")} value={stats.itemsScreened} />
+        <KpiCard label={t("detail.screening.evidenceWorthy")} value={stats.evidenceWorthy} />
+        <KpiCard label={t("detail.screening.discarded")} value={stats.discarded} />
+        <KpiCard label={t("detail.screening.mixedContent")} value={stats.mixedContent} />
+        <KpiCard label={t("detail.screening.hasProductSignal")} value={stats.hasProductSignalCount} />
+      </div>
+    </section>
   );
 }
 

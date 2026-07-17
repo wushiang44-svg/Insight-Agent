@@ -12,6 +12,7 @@ export type StepType =
   | "thought"
   | "action_search"
   | "observation"
+  | "screening"
   | "sufficiency_check"
   | "claim_extraction"
   | "summary";

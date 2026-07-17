@@ -133,6 +133,51 @@ def test_json_upload_collector_drives_the_same_loop_to_a_non_empty_report(tmp_pa
     assert report.top_pain_points  # non-empty: this data source actually produced usable evidence
 
 
+def test_mixed_content_review_produces_evidence_and_real_product_claims(tmp_path: Path) -> None:
+    """Phase 2 regression, end-to-end through the real loop (fallback screening
+    path, no LLM key needed): a review that's mostly a shipping complaint but
+    also contains real product content must not be discarded, and its product
+    Claims must actually get extracted -- not just survive screening."""
+    mixed_item = make_item(
+        "https://reddit.com/mixed",
+        "Disappointed",
+        "Shipping took forever and the box arrived crushed. Aside from that, "
+        "the battery life is terrible and dies within an hour.",
+    )
+    storage, run_id = run_loop(tmp_path, [[mixed_item]], max_iterations=1, min_evidence_target=1)
+
+    evidence = storage.list_evidence(run_id)
+    assert len(evidence) == 1
+    assert evidence[0].is_mixed_content is True
+    assert "shipping_logistics" in evidence[0].screening_categories
+    assert "product_feedback" in evidence[0].screening_categories
+
+    claims = storage.list_claims_for_evidence(evidence[0].evidence_id)
+    aspects = {c.aspect_raw for c in claims}
+    assert "battery" in aspects  # the real product signal survived, not just the shipping complaint
+
+
+def test_pure_shipping_evidence_still_reaches_claim_extraction(tmp_path: Path) -> None:
+    """extract_claims() must never be skipped based on screening's
+    has_product_signal judgment -- a pure shipping complaint (no product
+    content at all) is still evidence-worthy and still gets a claim-extraction
+    attempt, even though it correctly yields no product Claims."""
+    shipping_item = make_item(
+        "https://reddit.com/shipping-only",
+        "Shipping complaint",
+        "Shipping took three weeks and the box was crushed on arrival.",
+    )
+    storage, run_id = run_loop(tmp_path, [[shipping_item]], max_iterations=1, min_evidence_target=1)
+
+    evidence = storage.list_evidence(run_id)
+    assert len(evidence) == 1
+    assert evidence[0].is_mixed_content is False
+
+    events = storage.list_trace_events(run_id)
+    claim_events = [e for e in events if e.step_type.value == "claim_extraction"]
+    assert claim_events[0].payload["source_items_processed"] == 1  # extraction was attempted, not skipped
+
+
 def test_requires_subreddit_diversity_even_after_evidence_floor_met(tmp_path: Path) -> None:
     same_subreddit_pair = [
         make_item("https://reddit.com/a", "Battery complaint A", "Battery life is terrible, hate it.", subreddit="gadgets"),

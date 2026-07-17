@@ -81,7 +81,9 @@ class Storage:
                 aspect TEXT NOT NULL,
                 sentiment TEXT NOT NULL,
                 quote TEXT NOT NULL,
-                confidence REAL NOT NULL
+                confidence REAL NOT NULL,
+                screening_categories TEXT,
+                is_mixed_content INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_evidence_run ON evidence(run_id);
 
@@ -188,6 +190,18 @@ class Storage:
             self.conn.execute("ALTER TABLE claims ADD COLUMN merged_excerpts TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists on databases created after this migration was added
+        try:
+            # Phase 2 (review screening). Evidence saved before this migration has
+            # no screening data -- screening_categories stays NULL, is_mixed_content
+            # defaults to 0/False, both accurately representing "not screened under
+            # the new system" rather than needing a backfill.
+            self.conn.execute("ALTER TABLE evidence ADD COLUMN screening_categories TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            self.conn.execute("ALTER TABLE evidence ADD COLUMN is_mixed_content INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -218,7 +232,7 @@ class Storage:
             created_at=now,
             updated_at=now,
             data_source=data_source,
-            pipeline_version="v2",
+            pipeline_version="v3",
         )
         self.conn.execute(
             """
@@ -321,8 +335,8 @@ class Storage:
             INSERT OR REPLACE INTO evidence (
                 evidence_id, run_id, iteration, source_url, subreddit, item_type, title, body,
                 score, comment_count, created_at, fetched_at, search_query, insight_type,
-                aspect, sentiment, quote, confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                aspect, sentiment, quote, confidence, screening_categories, is_mixed_content
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 evidence.evidence_id,
@@ -343,6 +357,8 @@ class Storage:
                 evidence.sentiment.value,
                 evidence.quote,
                 evidence.confidence,
+                json.dumps(evidence.screening_categories) if evidence.screening_categories is not None else None,
+                int(evidence.is_mixed_content),
             ),
         )
         self.conn.commit()
@@ -373,6 +389,8 @@ class Storage:
             sentiment=Sentiment(row["sentiment"]),
             quote=row["quote"],
             confidence=row["confidence"],
+            screening_categories=json.loads(row["screening_categories"]) if row["screening_categories"] else None,
+            is_mixed_content=bool(row["is_mixed_content"]),
         )
 
     # ------------------------------------------------------------------

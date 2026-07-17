@@ -125,7 +125,7 @@ def get_claims(run_id: str) -> list[dict]:
             payload["original_source_url"] = source_evidence.source_url if source_evidence else None
             # Prefer the claim's own verified excerpt (the specific span that supports
             # THIS claim) over the evidence-level quote (one sentence picked once for
-            # the whole review by analyze_item, which may not relate to this claim at
+            # the whole review by screening, which may not relate to this claim at
             # all -- see voc_insight_agent Phase 1 validation findings).
             payload["original_excerpt"] = claim.source_excerpt or (source_evidence.quote if source_evidence else None)
             results.append(payload)

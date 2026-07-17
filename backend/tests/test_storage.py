@@ -126,11 +126,14 @@ def test_default_data_source_is_reddit_api(tmp_path: Path) -> None:
     assert run.data_source == DataSource.REDDIT_API
 
 
-def test_new_runs_get_pipeline_version_v2(tmp_path: Path) -> None:
+def test_new_runs_get_pipeline_version_v3(tmp_path: Path) -> None:
+    """v3 = screened by screen_item() (Phase 2), not the old binary analyze_item()
+    gate -- bumped from v2 because evidence_count/Report contents can genuinely
+    differ from v1/v2 runs on the same source corpus."""
     storage = make_storage(tmp_path)
     run = storage.create_run("dog food", [], [], 6, 25)
-    assert run.pipeline_version == "v2"
-    assert storage.get_run(run.run_id).pipeline_version == "v2"
+    assert run.pipeline_version == "v3"
+    assert storage.get_run(run.run_id).pipeline_version == "v3"
 
 
 def make_claim(claim_id: str = "cl_1", run_id: str = "run_1", evidence_id: str = "ev_1") -> Claim:

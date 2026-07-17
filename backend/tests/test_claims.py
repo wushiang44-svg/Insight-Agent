@@ -9,7 +9,6 @@ from app import routes as routes_module
 from app.llm import DeepSeekClient
 from app.models import Evidence, InsightType, Sentiment
 from app.pipeline.claims import ClaimExtractionStats, extract_claims
-from app.react_agent import analyze_item
 from app.storage import Storage
 
 
@@ -706,8 +705,12 @@ def test_safety_cap_still_truncates_after_merge_when_genuinely_excessive() -> No
 
 
 # ---------------------------------------------------------------------------
-# Mixed shipping + real-product-signal review (documents the known Phase 1 gap
-# in analyze_item's binary relevance gate -- Phase 2 screening is the real fix)
+# Mixed shipping + real-product-signal review -- Phase 1 documented this as a
+# known gap in analyze_item()'s binary relevance gate; Phase 2 (pipeline/screening.py,
+# see tests/test_screening.py) replaced that gate with screen_item(), which never
+# lets a category judgment suppress extract_claims(). analyze_item() itself has
+# been retired -- these tests now exercise extract_claims() directly against a
+# mixed-content Evidence, which is the part of this codebase Phase 1 actually owns.
 # ---------------------------------------------------------------------------
 
 MIXED_SHIPPING_AND_PRODUCT_BODY = (
@@ -716,62 +719,16 @@ MIXED_SHIPPING_AND_PRODUCT_BODY = (
 )
 
 
-def test_mixed_review_fallback_path_still_surfaces_the_product_claim() -> None:
-    """Under the deterministic fallback, detect_aspects matches multiple aspects
-    (shipping AND battery), so the review passes analyze_item's relevance gate and
-    extract_claims surfaces the non-shipping claim too -- today's actually-achievable
-    behavior, not a claim that mixed content is handled perfectly."""
+def test_mixed_review_still_surfaces_the_product_claim() -> None:
+    """A review that's mostly a shipping complaint but also contains real
+    product content must still yield the product Claim once it reaches
+    extract_claims() -- regardless of what upstream screening decided about
+    the review's other categories (see test_screening.py for the screening
+    layer's own coverage of this)."""
     evidence = make_evidence(body=MIXED_SHIPPING_AND_PRODUCT_BODY)
-    analysis = analyze_item("wireless earbuds", _evidence_to_item(evidence), no_llm())
-    assert analysis["is_relevant"] is True
-
     result = extract_claims("wireless earbuds", evidence, no_llm())
     aspects_found = {claim.aspect_raw for claim in result.claims}
     assert "battery" in aspects_found
-
-
-def test_mixed_review_llm_relevance_gate_can_drop_the_product_claim_known_limitation() -> None:
-    """Documented Phase 1 limitation: if analyze_item's LLM path judges a genuinely
-    mixed review as 'not relevant' (e.g. dominant tone reads as shipping/service
-    noise), extract_claims never runs at all and the real product signal is lost.
-    Phase 2 (review quality screening) replaces this all-or-nothing gate. This test
-    pins today's behavior so Phase 2's fix has something to flip."""
-    from app.models import CollectedItem
-
-    item = CollectedItem(
-        source_url="https://reddit.com/mixed",
-        subreddit="gadgets",
-        item_type="post",
-        post_id="p1",
-        comment_id=None,
-        title="Disappointed",
-        body=MIXED_SHIPPING_AND_PRODUCT_BODY,
-        score=1,
-        comment_count=0,
-        created_at="2026-01-01T00:00:00+00:00",
-        search_query="earbuds",
-    )
-    llm = FakeLLM(response={"is_relevant": False})
-    analysis = analyze_item("wireless earbuds", item, llm)
-    assert analysis["is_relevant"] is False  # known gap: extract_claims is never reached from here
-
-
-def _evidence_to_item(evidence: Evidence):
-    from app.models import CollectedItem
-
-    return CollectedItem(
-        source_url=evidence.source_url,
-        subreddit=evidence.subreddit,
-        item_type=evidence.item_type,
-        post_id=None,
-        comment_id=None,
-        title=evidence.title,
-        body=evidence.body,
-        score=evidence.score,
-        comment_count=evidence.comment_count,
-        created_at=evidence.created_at,
-        search_query=evidence.search_query,
-    )
 
 
 # ---------------------------------------------------------------------------

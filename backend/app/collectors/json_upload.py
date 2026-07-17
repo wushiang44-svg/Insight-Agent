@@ -12,8 +12,8 @@ class JsonUploadCollector:
 
     Fallback collector for development and demos when the Reddit API isn't
     available. Since there's no live search, `query` is ignored for filtering
-    (relevance filtering already happens downstream in `analyze_item`); each
-    call instead hands out the next unseen slice of the uploaded corpus,
+    (relevance/category screening already happens downstream in `screen_item`);
+    each call instead hands out the next unseen slice of the uploaded corpus,
     optionally narrowed by subreddit. Once the corpus is exhausted, `search`
     returns [] on every subsequent call, which the existing "diminishing
     returns" sufficiency check already treats as a stop signal.
