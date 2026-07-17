@@ -46,6 +46,12 @@ class IterationClaimStats:
     invalid_claims: int = 0
     extraction_failures: int = 0
     extraction_disabled: int = 0
+    # Phase 1.6 -- within-review dedup funnel, summed across every item this iteration.
+    raw_claims_extracted: int = 0
+    final_claims_saved: int = 0
+    within_review_duplicates_removed: int = 0
+    claims_merged: int = 0
+    safety_cap_truncations: int = 0
 
 
 def run_react_loop(
@@ -123,6 +129,11 @@ def run_react_loop(
                 claim_stats.llm_claims += result.stats.llm_claims
                 claim_stats.fallback_claims += result.stats.fallback_claims
                 claim_stats.invalid_claims += result.stats.invalid_claims
+                claim_stats.raw_claims_extracted += result.stats.raw_claims_extracted
+                claim_stats.final_claims_saved += result.stats.final_claims_saved
+                claim_stats.within_review_duplicates_removed += result.stats.within_review_duplicates_removed
+                claim_stats.claims_merged += result.stats.claims_merged
+                claim_stats.safety_cap_truncations += result.stats.safety_cap_truncations
                 if result.succeeded:
                     # Only ever replace on a successful extraction (even an empty one) --
                     # a failed extraction must never erase claims a previous run stored.

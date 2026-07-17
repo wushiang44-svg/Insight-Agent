@@ -85,3 +85,17 @@ def simple_similarity(left: str, right: str) -> float:
 def short_quote(body: str, limit: int = 220) -> str:
     text = " ".join(body.split())
     return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def find_aspect_excerpt(text: str, aspect: str, limit: int = 220) -> str | None:
+    """Returns the first sentence that actually matched `aspect`'s pattern, so a
+    fallback-path Claim can point at real supporting text instead of just the
+    aspect name. None if the aspect is unknown or, oddly, no longer matches."""
+    pattern = ASPECT_PATTERNS.get(aspect)
+    if pattern is None:
+        return None
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        sentence = sentence.strip()
+        if sentence and pattern.search(sentence):
+            return sentence[:limit]
+    return None

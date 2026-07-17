@@ -20,6 +20,11 @@ interface ClaimStatsTotals {
   fallbackClaims: number;
   invalidClaims: number;
   extractionFailures: number;
+  // Phase 1.6 -- within-review dedup funnel.
+  rawClaimsExtracted: number;
+  duplicatesRemoved: number;
+  claimsMerged: number;
+  safetyCapTruncations: number;
 }
 
 function sumClaimStats(detail: RunDetailData): ClaimStatsTotals {
@@ -31,6 +36,10 @@ function sumClaimStats(detail: RunDetailData): ClaimStatsTotals {
     fallbackClaims: 0,
     invalidClaims: 0,
     extractionFailures: 0,
+    rawClaimsExtracted: 0,
+    duplicatesRemoved: 0,
+    claimsMerged: 0,
+    safetyCapTruncations: 0,
   };
   for (const event of detail.trace_events) {
     if (event.step_type !== "claim_extraction") continue;
@@ -42,6 +51,10 @@ function sumClaimStats(detail: RunDetailData): ClaimStatsTotals {
     totals.fallbackClaims += Number(payload.fallback_claims ?? 0);
     totals.invalidClaims += Number(payload.invalid_claims ?? 0);
     totals.extractionFailures += Number(payload.extraction_failures ?? 0);
+    totals.rawClaimsExtracted += Number(payload.raw_claims_extracted ?? 0);
+    totals.duplicatesRemoved += Number(payload.within_review_duplicates_removed ?? 0);
+    totals.claimsMerged += Number(payload.claims_merged ?? 0);
+    totals.safetyCapTruncations += Number(payload.safety_cap_truncations ?? 0);
   }
   return totals;
 }
@@ -225,6 +238,10 @@ function ClaimExtractionSection({
         <KpiCard label={t("detail.claims.fallbackClaims")} value={stats.fallbackClaims} />
         <KpiCard label={t("detail.claims.invalidClaims")} value={stats.invalidClaims} />
         <KpiCard label={t("detail.claims.extractionFailures")} value={stats.extractionFailures} />
+        <KpiCard label={t("detail.claims.rawClaims")} value={stats.rawClaimsExtracted} />
+        <KpiCard label={t("detail.claims.duplicatesRemoved")} value={stats.duplicatesRemoved} />
+        <KpiCard label={t("detail.claims.claimsMerged")} value={stats.claimsMerged} />
+        <KpiCard label={t("detail.claims.safetyCapTruncations")} value={stats.safetyCapTruncations} />
       </div>
 
       <details className="tech-details" style={{ marginTop: "var(--space-4)" }}>
@@ -246,6 +263,11 @@ function ClaimExtractionSection({
                     <span className="muted">{Math.round(claim.confidence * 100)}%</span>
                   </div>
                   <div className="evidence-quote">{claim.statement}</div>
+                  {claim.merge_count > 1 && (
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      {t("detail.claims.mergedFrom", { n: claim.merge_count })}
+                    </div>
+                  )}
                   <div className="muted" style={{ marginTop: 6 }}>
                     {t("detail.claims.notVerbatim")}
                     {claim.original_excerpt && (
@@ -260,6 +282,16 @@ function ClaimExtractionSection({
                       </>
                     )}
                   </div>
+                  {claim.merged_excerpts && claim.merged_excerpts.length > 0 && (
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      {t("detail.claims.additionalExcerpts")}{" "}
+                      {claim.merged_excerpts.map((excerpt, i) => (
+                        <span key={i}>
+                          "{excerpt}"{i < claim.merged_excerpts!.length - 1 ? "; " : ""}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

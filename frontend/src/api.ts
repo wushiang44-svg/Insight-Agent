@@ -119,6 +119,12 @@ export interface Claim {
   canonical_category: string | null;
   original_source_url: string | null;
   original_excerpt: string | null;
+  // Phase 1.6 -- within-review dedup. merge_count is 1 for every claim from a
+  // run before this shipped; > 1 means this claim absorbed other near-duplicate
+  // claims from the same review (merged_claim_ids/merged_excerpts hold provenance).
+  merge_count: number;
+  merged_claim_ids: string[] | null;
+  merged_excerpts: string[] | null;
 }
 
 export interface CreateRunInput {

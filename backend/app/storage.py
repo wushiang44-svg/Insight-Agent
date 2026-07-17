@@ -129,7 +129,11 @@ class Storage:
                 subject TEXT,
                 explicit_request TEXT,
                 severity REAL,
-                canonical_category TEXT
+                canonical_category TEXT,
+                source_excerpt TEXT,
+                merge_count INTEGER NOT NULL DEFAULT 1,
+                merged_claim_ids TEXT,
+                merged_excerpts TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_claims_run ON claims(run_id);
             CREATE INDEX IF NOT EXISTS idx_claims_evidence ON claims(evidence_id);
@@ -160,6 +164,28 @@ class Storage:
             # aspect-only pipeline) — they simply have zero rows in `claims`, which is
             # a valid state, not an error. New runs are created with "v2" explicitly.
             self.conn.execute("ALTER TABLE runs ADD COLUMN pipeline_version TEXT NOT NULL DEFAULT 'v1'")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            # Claims saved before this migration have no per-claim excerpt; routes.py
+            # falls back to the parent Evidence's quote for those rows (NULL, not '').
+            self.conn.execute("ALTER TABLE claims ADD COLUMN source_excerpt TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            # Phase 1.6 (within-review dedup). Old claim rows default to
+            # merge_count=1 -- accurately "not merged", since nothing was
+            # merged when they were created. merged_claim_ids/merged_excerpts
+            # stay NULL for them (no provenance to backfill).
+            self.conn.execute("ALTER TABLE claims ADD COLUMN merge_count INTEGER NOT NULL DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            self.conn.execute("ALTER TABLE claims ADD COLUMN merged_claim_ids TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists on databases created after this migration was added
+        try:
+            self.conn.execute("ALTER TABLE claims ADD COLUMN merged_excerpts TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists on databases created after this migration was added
         self.conn.commit()
@@ -447,8 +473,9 @@ class Storage:
             INSERT OR REPLACE INTO claims (
                 claim_id, run_id, evidence_id, claim_type, aspect_raw, statement,
                 sentiment, confidence, extraction_method, created_at, subject,
-                explicit_request, severity, canonical_category
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                explicit_request, severity, canonical_category, source_excerpt,
+                merge_count, merged_claim_ids, merged_excerpts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 claim.claim_id,
@@ -465,6 +492,10 @@ class Storage:
                 claim.explicit_request,
                 claim.severity,
                 claim.canonical_category,
+                claim.source_excerpt,
+                claim.merge_count,
+                json.dumps(claim.merged_claim_ids) if claim.merged_claim_ids is not None else None,
+                json.dumps(claim.merged_excerpts) if claim.merged_excerpts is not None else None,
             ),
         )
         self.conn.commit()
@@ -486,8 +517,9 @@ class Storage:
                     INSERT OR REPLACE INTO claims (
                         claim_id, run_id, evidence_id, claim_type, aspect_raw, statement,
                         sentiment, confidence, extraction_method, created_at, subject,
-                        explicit_request, severity, canonical_category
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        explicit_request, severity, canonical_category, source_excerpt,
+                        merge_count, merged_claim_ids, merged_excerpts
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         claim.claim_id,
@@ -504,6 +536,10 @@ class Storage:
                         claim.explicit_request,
                         claim.severity,
                         claim.canonical_category,
+                        claim.source_excerpt,
+                        claim.merge_count,
+                        json.dumps(claim.merged_claim_ids) if claim.merged_claim_ids is not None else None,
+                        json.dumps(claim.merged_excerpts) if claim.merged_excerpts is not None else None,
                     ),
                 )
 
@@ -535,4 +571,8 @@ class Storage:
             explicit_request=row["explicit_request"],
             severity=row["severity"],
             canonical_category=row["canonical_category"],
+            source_excerpt=row["source_excerpt"],
+            merge_count=row["merge_count"],
+            merged_claim_ids=json.loads(row["merged_claim_ids"]) if row["merged_claim_ids"] else None,
+            merged_excerpts=json.loads(row["merged_excerpts"]) if row["merged_excerpts"] else None,
         )

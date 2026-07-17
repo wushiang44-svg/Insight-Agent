@@ -201,5 +201,23 @@ class Claim:
     subject: str | None = None
     explicit_request: str | None = None
     severity: float | None = None
+    # A short verbatim span from the parent Evidence's own text that specifically
+    # supports THIS claim -- distinct from Evidence.quote (a single quote picked
+    # once for the whole review by the earlier analyze_item() stage, which may not
+    # relate to any given claim). Nullable: the fallback path only sets it when it
+    # can find a matching sentence, and the LLM path nulls it out if the model's
+    # claimed excerpt isn't actually a substring of the source text (never trust an
+    # unverified "verbatim" quote). Callers should fall back to Evidence.quote when
+    # this is None, not fabricate one.
+    source_excerpt: str | None = None
+    # Phase 1.6 (within-review dedup): 1 means this claim was never merged with
+    # another raw claim from the same Evidence. >1 means this claim is the
+    # survivor of a merge -- merged_claim_ids/merged_excerpts hold provenance
+    # for the raw claims that got absorbed into it. Never populated across
+    # different Evidence rows -- cross-review merging is out of scope here and
+    # remains a future phase's job (see claims.py's _merge_within_review docstring).
+    merge_count: int = 1
+    merged_claim_ids: list[str] | None = None
+    merged_excerpts: list[str] | None = None
     # Nullable; populated by a future clustering phase (Phase 5), not Phase 1.
     canonical_category: str | None = None
