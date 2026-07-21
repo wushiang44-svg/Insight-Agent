@@ -9,3 +9,4 @@ backend/data/*.sqlite3*
 backend/*.egg-info/
 node_modules/
 frontend/dist/
+.reddit-chrome-profile/

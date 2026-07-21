@@ -28,6 +28,9 @@ interface SourceStructure {
 // separate from the translations means adding a language never means touching
 // this file, and adding a data source never means touching i18n.ts's shape.
 const STRUCTURE: Record<DataSource, SourceStructure> = {
+  reddit: { groupKey: "subreddit", itemKey: "comment", citationPrefix: "r/", configKey: "reddit_browser_configured" },
+  // Legacy — no longer offered for new runs (see CreateRun.tsx), kept only so
+  // pre-existing runs using these values still render correctly.
   reddit_api: { groupKey: "subreddit", itemKey: "comment", citationPrefix: "r/", configKey: "reddit_configured" },
   reddit_scraper: { groupKey: "subreddit", itemKey: "comment", citationPrefix: "r/" },
   json_upload: { groupKey: "source", itemKey: "item", citationPrefix: "" },
@@ -38,7 +41,7 @@ const STRUCTURE: Record<DataSource, SourceStructure> = {
 /** Falls back to the Reddit shape for a run whose data_source predates this source (or hasn't loaded yet). */
 export function useSourceMeta(dataSource: DataSource | undefined): SourceMeta {
   const { t } = useLanguage();
-  const key: DataSource = dataSource && STRUCTURE[dataSource] ? dataSource : "reddit_api";
+  const key: DataSource = dataSource && STRUCTURE[dataSource] ? dataSource : "reddit";
   const struct = STRUCTURE[key];
   return {
     key,

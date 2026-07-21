@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from .collectors.amazon import AmazonCollector
 from .collectors.reddit import RedditCollector
+from .collectors.reddit_browser import RedditBrowserCollector
 from .collectors.youtube import YoutubeCollector
 from .llm import DeepSeekClient
 from .models import DataSource, RunStatus
@@ -30,7 +31,7 @@ class CreateRunRequest(BaseModel):
     target_subreddits: list[str] = Field(default_factory=list)
     max_iterations: int = Field(default=6, ge=1, le=20)
     min_evidence_target: int = Field(default=25, ge=1, le=500)
-    data_source: DataSource = Field(default=DataSource.REDDIT_API)
+    data_source: DataSource = Field(default=DataSource.REDDIT)
     uploaded_items: list[dict] = Field(default_factory=list)
 
 
@@ -38,6 +39,7 @@ class CreateRunRequest(BaseModel):
 def get_config() -> dict:
     return {
         "reddit_configured": RedditCollector().available(),
+        "reddit_browser_configured": RedditBrowserCollector().available(),
         "amazon_configured": AmazonCollector().available(),
         "youtube_configured": YoutubeCollector().available(),
         "deepseek_configured": DeepSeekClient().available(),

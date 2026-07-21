@@ -28,7 +28,11 @@ export type ClaimType =
   | "seller_service_issue"
   | "noise";
 
-export type DataSource = "reddit_api" | "reddit_scraper" | "json_upload" | "amazon" | "youtube";
+// "reddit" is the canonical, user-facing Reddit source for new runs (routed to the
+// browser+CDP collector). "reddit_api"/"reddit_scraper" are legacy values kept only
+// so pre-existing stored runs still display/replay correctly -- not offered as new-run
+// choices anymore (see CreateRun.tsx's SOURCE_OPTIONS).
+export type DataSource = "reddit" | "reddit_api" | "reddit_scraper" | "json_upload" | "amazon" | "youtube";
 
 export interface RunRecord {
   run_id: string;
@@ -50,6 +54,7 @@ export interface RunRecord {
 
 export interface AppConfig {
   reddit_configured: boolean;
+  reddit_browser_configured: boolean;
   amazon_configured: boolean;
   youtube_configured: boolean;
   deepseek_configured: boolean;

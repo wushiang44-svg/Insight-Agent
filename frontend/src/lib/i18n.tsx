@@ -30,17 +30,20 @@ const en: Dict = {
   "create.productCategory": "Product category *",
   "create.productCategory.placeholder": "e.g. wireless earbuds",
   "create.dataSource": "Data source",
+  "create.source.reddit": "Reddit (browser automation, requires one-time setup)",
   "create.source.reddit_api": "Reddit API (live search)",
   "create.source.reddit_scraper": "Reddit scraper (no API key, unofficial)",
   "create.source.amazon": "Amazon Reviews (browser automation, requires one-time login)",
   "create.source.youtube": "YouTube Comments (browser automation, no login needed)",
   "create.source.json_upload": "JSON upload (offline / demo data)",
   "create.redditWarning":
-    'No Reddit API credentials detected — the Reddit Data API currently requires an approval process that may take a while. Consider "Reddit scraper" for live data without credentials, or "JSON upload" to try the full flow with prepared sample data.',
+    "Reddit browser collector isn't set up yet on this backend — it needs Chrome installed and a one-time manual profile initialization (open reddit.com once in a dedicated Chrome window, then close it). See the RedditBrowserCollector docstring for the exact command. Consider \"JSON upload\" to try the full flow with prepared sample data in the meantime.",
   "create.sourceWarning":
     "{source} isn't set up on this backend yet ({hint}). Pick another data source, or ask whoever runs this backend to finish setup.",
   "create.hint.amazon": "no agent-browser login found for Amazon — see the AmazonCollector docstring for the one-time login command",
   "create.hint.notInstalled": "agent-browser isn't installed",
+  "create.note.reddit":
+    "Drives a real, dedicated Chrome instance (attached via CDP, not agent-browser's own managed browser) — no Reddit login needed, but the profile needs a one-time manual visit before it will return anything. Slower than an API call, but currently the only reliable way to reach Reddit from this environment.",
   "create.note.reddit_scraper":
     'Pulls Reddit\'s public .json endpoints directly — no API key needed, but it\'s unofficial, slower (rate-limited client-side to be polite), and can be blocked or changed by Reddit at any time. Use "Reddit API" instead once your credentials are approved.',
   "create.note.amazon":
@@ -134,6 +137,7 @@ const en: Dict = {
   "health.attention": "Needs attention",
   "health.atRisk": "At risk",
 
+  "source.reddit.label": "Reddit",
   "source.reddit_api.label": "Reddit API",
   "source.reddit_scraper.label": "Reddit Scraper (unofficial)",
   "source.json_upload.label": "JSON Upload",
@@ -247,16 +251,19 @@ const zh: Dict = {
   "create.productCategory": "产品类别 *",
   "create.productCategory.placeholder": "例如:无线耳机",
   "create.dataSource": "数据来源",
+  "create.source.reddit": "Reddit(浏览器自动化,需要一次性初始化)",
   "create.source.reddit_api": "Reddit API(实时搜索)",
   "create.source.reddit_scraper": "Reddit 爬虫(无需 API key,非官方)",
   "create.source.amazon": "Amazon 评论(浏览器自动化,需要一次性登录)",
   "create.source.youtube": "YouTube 评论(浏览器自动化,无需登录)",
   "create.source.json_upload": "JSON 上传(离线 / 演示数据)",
   "create.redditWarning":
-    "未检测到 Reddit API 凭证——Reddit Data API 目前需要经过审批流程,可能要等一段时间。可以先选择「Reddit 爬虫」无需凭证也能拿到实时数据,或者选择「JSON 上传」用准备好的样本数据体验完整流程。",
+    "这个后端上 Reddit 浏览器采集器还没配置好——需要安装 Chrome,并完成一次性的手动 profile 初始化(在一个专用 Chrome 窗口里打开一次 reddit.com,再关闭窗口)。具体命令请参考 RedditBrowserCollector 的文档注释。也可以先选择「JSON 上传」用准备好的样本数据体验完整流程。",
   "create.sourceWarning": "{source} 在这个后端上还没配置好({hint})。请换一个数据来源,或者联系维护这个后端的人完成配置。",
   "create.hint.amazon": "没有找到 Amazon 的 agent-browser 登录状态——一次性登录命令请参考 AmazonCollector 的文档注释",
   "create.hint.notInstalled": "没有安装 agent-browser",
+  "create.note.reddit":
+    "会启动一个真实的、专用的 Chrome 实例(通过 CDP 接入,不是 agent-browser 自己管理的浏览器)——不需要 Reddit 登录,但这个 profile 需要先手动访问一次才能拿到数据。比 API 调用慢,但目前是从这个环境访问 Reddit 唯一可靠的方式。",
   "create.note.reddit_scraper":
     "直接抓取 Reddit 公开的 .json 接口——不需要 API key,但这是非官方方式,速度更慢(为了礼貌在客户端做了限流),而且随时可能被 Reddit 屏蔽或改变。凭证审批下来之后建议改用「Reddit API」。",
   "create.note.amazon":
@@ -350,6 +357,7 @@ const zh: Dict = {
   "health.attention": "需要关注",
   "health.atRisk": "存在风险",
 
+  "source.reddit.label": "Reddit",
   "source.reddit_api.label": "Reddit API",
   "source.reddit_scraper.label": "Reddit 爬虫(非官方)",
   "source.json_upload.label": "JSON 上传",

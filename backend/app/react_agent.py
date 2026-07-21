@@ -106,11 +106,18 @@ def run_react_loop(
 
             try:
                 items = collector.search(thought["query"], subreddit=thought["subreddit"], limit=25)
+                search_payload = {"query": thought["query"], "subreddit": thought["subreddit"], "items_returned": len(items)}
+                # Optional, duck-typed enrichment (same pattern as run_manager.py's
+                # getattr(collector, "close", ...) call) -- a no-op for every collector
+                # that doesn't set this, currently only RedditBrowserCollector does.
+                extra_stats = getattr(collector, "last_search_stats", None)
+                if extra_stats:
+                    search_payload.update(extra_stats)
                 trace(
                     iteration,
                     StepType.ACTION_SEARCH,
                     f'Searched "{thought["query"]}", got {len(items)} result(s)',
-                    {"query": thought["query"], "subreddit": thought["subreddit"], "items_returned": len(items)},
+                    search_payload,
                 )
             except Exception as exc:  # noqa: BLE001 - a failed search should not crash the whole run
                 items = []

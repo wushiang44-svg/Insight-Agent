@@ -22,6 +22,12 @@ class RedditScraperCollector:
     pending approval. Same Collector shape as RedditCollector, so it's a drop-in
     swap via DataSource.REDDIT_SCRAPER with zero changes to react_agent.py.
 
+    LEGACY: superseded by DataSource.REDDIT (RedditBrowserCollector) for new
+    runs, and currently non-functional in this environment (Reddit's edge
+    returns HTTP 403 on every request to this endpoint). Kept registered only
+    so pre-existing runs that used DataSource.REDDIT_SCRAPER keep resolving to
+    their original collector -- not offered as a new-run choice anymore.
+
     These endpoints are unauthenticated and unofficial: no SLA, far more
     aggressive rate limiting/blocking than the real API, and technically
     outside Reddit's API Terms for automated collection. Treat this as a

@@ -6,7 +6,7 @@ import type { AppConfig, DataSource } from "../api";
 import { useLanguage } from "../lib/i18n";
 import { useSourceMeta } from "../lib/sources";
 
-const SOURCE_OPTIONS: DataSource[] = ["reddit_api", "reddit_scraper", "amazon", "youtube", "json_upload"];
+const SOURCE_OPTIONS: DataSource[] = ["reddit", "amazon", "youtube", "json_upload"];
 
 function parseList(value: string): string[] {
   return value
@@ -37,7 +37,7 @@ export function CreateRun() {
   const [subreddits, setSubreddits] = useState("");
   const [maxIterations, setMaxIterations] = useState(6);
   const [minEvidenceTarget, setMinEvidenceTarget] = useState(25);
-  const [dataSource, setDataSource] = useState<DataSource>("reddit_api");
+  const [dataSource, setDataSource] = useState<DataSource>("reddit");
   const [uploadedItems, setUploadedItems] = useState<Record<string, unknown>[]>([]);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -50,7 +50,7 @@ export function CreateRun() {
       .getConfig()
       .then((data) => {
         setConfig(data);
-        if (!data.reddit_configured) {
+        if (!data.reddit_browser_configured) {
           setDataSource("json_upload");
         }
       })
@@ -106,13 +106,13 @@ export function CreateRun() {
     }
   }
 
-  const showRedditWarning = dataSource === "reddit_api" && config !== null && !config.reddit_configured;
+  const showRedditWarning = dataSource === "reddit" && config !== null && !config.reddit_browser_configured;
 
   const selectedMeta = useSourceMeta(dataSource);
-  // Reddit's "not configured" case has its own, more detailed message above (approval
-  // process, alternatives) — this generic one covers amazon/youtube instead.
+  // Reddit's "not configured" case has its own, more detailed message above (one-time
+  // setup, alternatives) — this generic one covers amazon/youtube instead.
   const showSourceWarning =
-    dataSource !== "reddit_api" &&
+    dataSource !== "reddit" &&
     config !== null &&
     selectedMeta.configKey !== undefined &&
     !config[selectedMeta.configKey];
@@ -155,7 +155,7 @@ export function CreateRun() {
           <p className="error">{t("create.sourceWarning", { source: selectedMeta.label, hint: notConfiguredHint })}</p>
         )}
 
-        {dataSource === "reddit_scraper" && <p className="muted">{t("create.note.reddit_scraper")}</p>}
+        {dataSource === "reddit" && <p className="muted">{t("create.note.reddit")}</p>}
 
         {dataSource === "amazon" && <p className="muted">{t("create.note.amazon")}</p>}
 
@@ -182,7 +182,7 @@ export function CreateRun() {
           {t("create.keywords")}
           <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder={t("create.keywords.placeholder")} />
         </label>
-        {(dataSource === "reddit_api" || dataSource === "reddit_scraper") && (
+        {dataSource === "reddit" && (
           <label>
             {t("create.subreddits")}
             <input

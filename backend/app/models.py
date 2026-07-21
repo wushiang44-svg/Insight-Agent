@@ -85,6 +85,11 @@ class DataSource(StrEnum):
     (e.g. AMAZON, YOUTUBE) and register a factory in app/collectors — nothing
     else needs to change."""
 
+    REDDIT = "reddit"
+    # REDDIT_API / REDDIT_SCRAPER: superseded by REDDIT (the browser+CDP
+    # collector) for new runs. Kept only so pre-existing stored runs using
+    # these values keep resolving to their original collectors -- not offered
+    # as new-run choices in the frontend anymore.
     REDDIT_API = "reddit_api"
     REDDIT_SCRAPER = "reddit_scraper"
     JSON_UPLOAD = "json_upload"

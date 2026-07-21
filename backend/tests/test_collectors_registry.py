@@ -5,6 +5,7 @@ from pathlib import Path
 from app.collectors import CollectorContext, build_collector, registry as registry_module
 from app.collectors.json_upload import JsonUploadCollector
 from app.collectors.reddit import RedditCollector
+from app.collectors.reddit_browser import RedditBrowserCollector
 from app.collectors.scraper import RedditScraperCollector
 from app.models import CollectedItem, DataSource
 from app.storage import Storage
@@ -16,7 +17,21 @@ def make_storage(tmp_path: Path) -> Storage:
     return storage
 
 
-def test_build_collector_dispatches_reddit_api(tmp_path: Path) -> None:
+def test_build_collector_dispatches_reddit(tmp_path: Path) -> None:
+    """DataSource.REDDIT is the new canonical Reddit source, routed to the
+    validated browser+CDP collector."""
+    storage = make_storage(tmp_path)
+    run = storage.create_run("dog food", [], [], 6, 25, data_source=DataSource.REDDIT)
+
+    collector = build_collector(CollectorContext(run=run, storage=storage))
+
+    assert isinstance(collector, RedditBrowserCollector)
+
+
+def test_build_collector_still_dispatches_legacy_reddit_api(tmp_path: Path) -> None:
+    """Pre-existing stored runs using the legacy DataSource.REDDIT_API value must
+    keep resolving to their original collector, untouched -- no migration, no
+    behavior change for old runs."""
     storage = make_storage(tmp_path)
     run = storage.create_run("dog food", [], [], 6, 25, data_source=DataSource.REDDIT_API)
 
