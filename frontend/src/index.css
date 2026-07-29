@@ -30,6 +30,15 @@
   --cat-feature: #2a78d6;
   --cat-praise: #008300;
   --cat-competitor: #4a3aa7;
+  /* Phase 3, Stage 9: shipping/seller-service sections only render when a
+     category clears the backend's support threshold (a rarer, secondary
+     case) -- picked to be clearly hue-distinct from the four above (goldenrod
+     vs. blue-grey, neither red/blue/green/purple) without a full CVD-palette
+     validation pass, which felt disproportionate for two gated, low-frequency
+     sections. Revisit with the dataviz skill if they turn out to need the
+     same prominence as the primary four. */
+  --cat-shipping: #b8860b;
+  --cat-service: #607d8b;
 
   /* severity / priority — fixed status scale, always paired with a text label */
   --sev-critical-bg: #d03b3b;
@@ -87,6 +96,21 @@ a {
   font-weight: 700;
   font-size: 18px;
   text-decoration: none;
+  color: var(--text-h);
+}
+
+.app-nav {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.app-nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.app-nav a:hover {
   color: var(--text-h);
 }
 
@@ -658,9 +682,29 @@ label.radio-option {
   font-size: 13px;
   color: var(--text-h);
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.bar-rank-label-text {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.bar-rank-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--sev-medium-bg);
+  color: var(--sev-medium-fg);
+  white-space: nowrap;
 }
 
 .bar-rank-track {
@@ -796,6 +840,25 @@ label.radio-option {
   grid-template-columns: 1fr 1fr;
   gap: var(--space-5);
   align-items: stretch;
+}
+
+/* Phase 3, Stage 9: category detail key/value pairs (Taxonomy.tsx) */
+.taxonomy-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-3) 0 0;
+}
+
+.taxonomy-fields dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.taxonomy-fields dd {
+  margin: 0;
+  font-size: 13px;
+  word-break: break-word;
 }
 
 @media (max-width: 720px) {

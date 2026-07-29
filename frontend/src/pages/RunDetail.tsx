@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
-import type { Claim, RunDetail as RunDetailData } from "../api";
+import type { CanonicalCategory, Claim, RunDetail as RunDetailData } from "../api";
 import { KpiCard } from "../components/KpiCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { TraceTimeline } from "../components/TraceTimeline";
@@ -117,6 +117,20 @@ export function RunDetail() {
     };
   }, [runId]);
 
+  // Re-fetches only the Claims list -- used after a manual categorization
+  // succeeds, so the assignment is reflected without waiting for (or
+  // triggering an extra) full run-status poll cycle.
+  async function refreshClaims() {
+    if (!runId) return;
+    try {
+      const claimsData = await api.getClaims(runId);
+      setClaims(claimsData);
+      setClaimsError(null);
+    } catch (err) {
+      setClaimsError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function handleStop() {
     if (!runId) return;
     await api.stopRun(runId);
@@ -210,7 +224,15 @@ export function RunDetail() {
       <TraceTimeline events={traceEvents} meta={meta} />
 
       {hasClaimsPipeline(run.pipeline_version) && <ScreeningSection detail={detail} />}
-      {hasClaimsPipeline(run.pipeline_version) && <ClaimExtractionSection detail={detail} claims={claims} claimsError={claimsError} />}
+      {hasClaimsPipeline(run.pipeline_version) && (
+        <ClaimExtractionSection
+          detail={detail}
+          claims={claims}
+          claimsError={claimsError}
+          productCategory={run.product_category}
+          onClaimAssigned={refreshClaims}
+        />
+      )}
     </div>
   );
 }
@@ -267,10 +289,14 @@ function ClaimExtractionSection({
   detail,
   claims,
   claimsError,
+  productCategory,
+  onClaimAssigned,
 }: {
   detail: RunDetailData;
   claims: Claim[] | null;
   claimsError: string | null;
+  productCategory: string;
+  onClaimAssigned: () => void;
 }) {
   const { t, language } = useLanguage();
   const stats = sumClaimStats(detail);
@@ -349,6 +375,7 @@ function ClaimExtractionSection({
                       ))}
                     </div>
                   )}
+                  <ManualCategorizeControl claim={claim} productCategory={productCategory} onAssigned={onClaimAssigned} />
                 </div>
               </div>
             ))}
@@ -356,5 +383,94 @@ function ClaimExtractionSection({
         )}
       </details>
     </section>
+  );
+}
+
+// Phase 3, Stage 8/9: the only existing Claim-level review surface in this
+// frontend is this per-claim block inside ClaimExtractionSection -- this
+// control is mounted here rather than in a new, unrelated Claims dashboard.
+// override_manual is never exposed here: this control always calls
+// POST /claims/{id}/categorize (which the backend always applies with
+// override_manual=True on its own side, since a reviewer's direct action is
+// always allowed to change a claim's category) -- there is no merchant-facing
+// way to pass override_manual for an *automatic* recategorization pass, by
+// design, matching the plan's "not a normal merchant action" requirement.
+function ManualCategorizeControl({
+  claim,
+  productCategory,
+  onAssigned,
+}: {
+  claim: Claim;
+  productCategory: string;
+  onAssigned: () => void;
+}) {
+  const { t } = useLanguage();
+  const [categories, setCategories] = useState<CanonicalCategory[] | null>(null);
+  const [selectedCategoryId, setSelectedCategoryId] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listCategories(productCategory)
+      .then((data) => {
+        if (!cancelled) setCategories(data);
+      })
+      .catch(() => {
+        if (!cancelled) setCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [productCategory]);
+
+  // Deprecated/alias categories are never valid manual-assignment targets --
+  // the backend rejects them (409) too; filtering them out of the dropdown
+  // is a UX convenience, not the source of truth.
+  const assignableCategories = (categories ?? []).filter((category) => category.status !== "deprecated" && category.alias_of === null);
+
+  async function handleAssign() {
+    if (!selectedCategoryId || pending) return;
+    setPending(true);
+    setError(null);
+    setSuccess(false);
+    try {
+      await api.manuallyCategorizeClaim(claim.claim_id, selectedCategoryId);
+      setSuccess(true);
+      onAssigned();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="manual-categorize" style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      {claim.categorization_method === "manual" && (
+        <span className="severity-pill" style={{ background: "var(--sev-low-bg)", color: "var(--sev-low-fg)" }}>
+          {t("taxonomy.manualAssignment.current")}
+        </span>
+      )}
+      <select
+        value={selectedCategoryId}
+        onChange={(event) => setSelectedCategoryId(event.target.value)}
+        disabled={pending || categories === null}
+      >
+        <option value="">{t("taxonomy.manualAssignment.placeholder")}</option>
+        {assignableCategories.map((category) => (
+          <option key={category.category_id} value={category.category_id}>
+            {category.canonical_label} ({t(`taxonomy.status.${category.status}`)})
+          </option>
+        ))}
+      </select>
+      <button type="button" className="secondary" onClick={handleAssign} disabled={pending || !selectedCategoryId}>
+        {pending ? t("taxonomy.manualAssignment.pending") : t("taxonomy.manualAssignment.action")}
+      </button>
+      {success && <span className="muted">{t("taxonomy.manualAssignment.success")}</span>}
+      {error && <span className="error">{error}</span>}
+    </div>
   );
 }

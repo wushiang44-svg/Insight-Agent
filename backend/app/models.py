@@ -41,6 +41,8 @@ class StepType(StrEnum):
     SCREENING = "screening"
     SUFFICIENCY_CHECK = "sufficiency_check"
     CLAIM_EXTRACTION = "claim_extraction"
+    CATEGORIZATION = "categorization"
+    CLAIMS_REPORT_ELIGIBILITY = "claims_report_eligibility"
     SUMMARY = "summary"
 
 
@@ -78,6 +80,25 @@ class ClaimType(StrEnum):
     SHIPPING_ISSUE = "shipping_issue"
     SELLER_SERVICE_ISSUE = "seller_service_issue"
     NOISE = "noise"
+
+
+class CategoryStatus(StrEnum):
+    """Lifecycle of a canonical_categories row (Phase 3 taxonomy). proposed ->
+    approved is a human decision (see routes.py's curation endpoints);
+    deprecated retires a category without deleting history. Never inferred
+    from claims data -- always an explicit transition through Storage's
+    transition methods, each of which writes a category_audit_log row."""
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DEPRECATED = "deprecated"
+
+
+class CategoryAuditAction(StrEnum):
+    APPROVE = "approve"
+    MERGE = "merge"
+    DEPRECATE = "deprecate"
+    RENAME = "rename"
 
 
 class DataSource(StrEnum):
@@ -118,9 +139,15 @@ class RunRecord:
     # screened by screen_item() (Phase 2) instead of the old binary analyze_item()
     # gate -- evidence_count/Report contents can genuinely differ from v1/v2 runs
     # on the same source corpus, since mixed-content reviews that used to be
-    # silently dropped now survive. Existing DB rows keep whatever version they
-    # were created with; new runs are created as "v3".
-    pipeline_version: str = "v3"
+    # silently dropped now survive. "v4": runs whose Claims also go through
+    # pipeline/taxonomy.py's categorize_claims() batch step (Phase 3) and,
+    # when the Claims-report eligibility gate says so, get a Report built from
+    # categorized Claims instead of raw Evidence (react_agent.py's
+    # summarize()) -- still informational only, not itself the branch
+    # decision (that's `report_inputs`/`claims` being non-empty). Existing DB
+    # rows keep whatever version they were created with; new runs are created
+    # as "v4".
+    pipeline_version: str = "v4"
 
 
 @dataclass(slots=True)
@@ -186,6 +213,18 @@ class TraceEvent:
     created_at: str = field(default_factory=utc_now)
 
 
+class ReportSource(StrEnum):
+    """Which pipeline actually produced a Report -- Phase 3, Stage 7. Never
+    constructed from an arbitrary string without validation: Report.__post_init__
+    coerces `report_source` through this enum on every construction (both a
+    fresh summarize() call and a row read back from storage), so an invalid
+    value can never silently enter the database or exist as a live Report
+    instance -- it raises ValueError immediately instead."""
+
+    CLAIMS = "claims"
+    LEGACY_EVIDENCE = "legacy_evidence"
+
+
 @dataclass(slots=True)
 class Report:
     run_id: str
@@ -208,6 +247,30 @@ class Report:
     # quote that's deliberately never translated.
     recommended_actions_zh: list[str] = field(default_factory=list)
     summary_markdown_zh: str = ""
+    # Phase 3, Stage 6/7: new report sections, populated only by the Claims
+    # path (react_agent._aggregate_claims_by_category / _build_report_inputs)
+    # -- Evidence has no shipping_issue/seller_service_issue concept of its
+    # own, so the legacy path always leaves these empty. Same aggregate-entry
+    # dict shape as top_pain_points etc. (aspect/count/subreddit_count/
+    # avg_confidence/sentiment_counts/example_quotes), plus category_status.
+    shipping_issues: list[dict[str, Any]] = field(default_factory=list)
+    seller_service_issues: list[dict[str, Any]] = field(default_factory=list)
+    # Which pipeline produced this Report and, when it's the legacy fallback,
+    # exactly why the Claims path wasn't used -- passed through verbatim from
+    # Stage 5's _claims_report_eligible(), never recomputed or re-inferred
+    # here. fallback_reason is None precisely when report_source is "claims".
+    # Old report rows (saved before this field existed) read back as
+    # "legacy_evidence"/None, which is accurate -- nothing retroactive, same
+    # convention as every prior additive Report field.
+    report_source: ReportSource = ReportSource.LEGACY_EVIDENCE
+    fallback_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        # Validates (and coerces a plain string into) report_source on EVERY
+        # construction -- a fresh Report from summarize() and a row read back
+        # from storage both go through this, so an invalid value can never
+        # exist as a live Report instance, let alone reach the database.
+        self.report_source = ReportSource(self.report_source)
 
 
 @dataclass(slots=True)
@@ -254,4 +317,56 @@ class Claim:
     merged_claim_ids: list[str] | None = None
     merged_excerpts: list[str] | None = None
     # Nullable; populated by a future clustering phase (Phase 5), not Phase 1.
+    # Points at a canonical_categories.category_id once Phase 3's categorization
+    # batch step runs -- see pipeline/taxonomy.py (added in a later Phase 3 stage;
+    # this field is not yet written by anything as of the current stage).
     canonical_category: str | None = None
+    # Phase 3 categorization provenance. All three NULL means "categorization
+    # hasn't run for this claim yet" (pre-Phase-3 claim, or the kill switch was
+    # off). status="unresolved" is an infrastructure failure (e.g. the LLM call
+    # itself errored) -- deliberately distinct from a genuine no-match, which
+    # resolves normally via method="proposed_new". An infra failure must never
+    # mint a new category and must stay retryable, never silently downgrade to
+    # a proposal. method="manual" marks a human's direct single-claim override
+    # (see Storage.set_claims_categorization's override_manual guard) --
+    # categorize_claims() never touches a manual claim without that explicit,
+    # separately-named flag, regardless of its own `force` setting.
+    categorization_status: str | None = None  # "resolved" | "unresolved" | None
+    categorization_method: str | None = None  # "lexical_match" | "llm_match" | "proposed_new" | "manual" | None
+    categorization_confidence: float | None = None  # populated only for lexical_match / llm_match
+
+
+@dataclass(slots=True)
+class CanonicalCategory:
+    """One entry in a product_category's normalized topic taxonomy (Phase 3).
+    Claim.canonical_category points here by category_id. alias_of is a
+    category-to-category MERGE only -- never a string-synonym mechanism (no
+    separate table of known aspect_raw variants exists; matching is against
+    canonical_label alone, see pipeline/taxonomy.py). Resolved through alias_of
+    at report-read time, exactly one hop deep -- Storage's merge_category()
+    refuses to create a longer chain, so callers never need to loop."""
+
+    category_id: str
+    product_category: str
+    canonical_label: str
+    normalized_label: str
+    status: CategoryStatus
+    first_seen_aspect_raw: str
+    created_at: str
+    updated_at: str
+    alias_of: str | None = None
+
+
+@dataclass(slots=True)
+class CategoryAuditLogEntry:
+    """Durable record of a category-level lifecycle transition (approve/merge/
+    deprecate/rename). Not user-attributed -- this app has no auth/identity
+    system, so the log records what happened and when, not who. Reuses
+    TraceEvent's action+JSON-detail shape rather than bespoke per-action
+    columns."""
+
+    category_id: str
+    action: CategoryAuditAction
+    detail: dict[str, Any]
+    created_at: str = field(default_factory=utc_now)
+    id: int | None = None

@@ -6,7 +6,9 @@ import pytest
 
 from app.collectors.json_upload import JsonUploadCollector
 from app.llm import DeepSeekClient
-from app.models import CollectedItem, DataSource, RunStatus
+from app.models import Claim, ClaimType, CollectedItem, DataSource, RunStatus, Sentiment
+from app.pipeline.taxonomy import CategorizationStats
+from app import react_agent as react_agent_module
 from app.react_agent import run_react_loop
 from app.storage import Storage
 
@@ -192,3 +194,166 @@ def test_requires_subreddit_diversity_even_after_evidence_floor_met(tmp_path: Pa
     run = storage.get_run(run_id)
     assert run.iteration_count == 2  # floor met after iteration 1 but not sufficient until 2nd subreddit appears
     assert run.status == RunStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 -- categorize_claims() orchestration (categorization only; the
+# Report is still built purely from Evidence, per Stage 4's scope)
+# ---------------------------------------------------------------------------
+
+
+def test_categorization_runs_exactly_once_per_completed_run(tmp_path: Path) -> None:
+    batches = [[PAIN_ITEM_1], [PAIN_ITEM_2], [NOISE_ITEM]]
+    storage, run_id = run_loop(tmp_path, batches, max_iterations=3, min_evidence_target=1000)
+
+    events = storage.list_trace_events(run_id)
+    cat_events = [e for e in events if e.step_type.value == "categorization"]
+    assert len(cat_events) == 1  # once for the whole run, not once per iteration (3 iterations happened here)
+
+
+def test_categorization_only_touches_claims_from_the_current_run(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "test.sqlite3")
+    storage.migrate()
+    # A different product_category than the run under test, deliberately --
+    # create_run()'s run_id is a hash of (product_category, current second),
+    # so two runs with the SAME product_category created in the same second
+    # would collide.
+    other_run = storage.create_run("cat food", [], [], 6, 25)
+    other_claim = Claim(
+        claim_id="cl_other",
+        run_id=other_run.run_id,
+        evidence_id="ev_other",
+        claim_type=ClaimType.PROBLEM,
+        aspect_raw="battery life",
+        statement="Battery drains quickly",
+        sentiment=Sentiment.NEGATIVE,
+        confidence=0.8,
+        extraction_method="llm",
+    )
+    storage.save_claim(other_claim)
+
+    run = storage.create_run("wireless earbuds", ["earbuds"], [], 1, 1)
+    run_react_loop(run.run_id, storage, FakeCollector([[PAIN_ITEM_1]]), no_llm(), should_stop=lambda: False)
+
+    untouched = storage.list_claims(other_run.run_id)[0]
+    assert untouched.categorization_status is None  # a different run's Claims were never in scope
+
+
+def test_categorization_runs_after_claim_extraction_and_before_summary(tmp_path: Path) -> None:
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    step_order = [e.step_type.value for e in storage.list_trace_events(run_id)]
+    assert step_order.index("claim_extraction") < step_order.index("categorization") < step_order.index("summary")
+
+
+def test_categorization_trace_event_records_the_full_stats_payload(tmp_path: Path) -> None:
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    cat_event = next(e for e in storage.list_trace_events(run_id) if e.step_type.value == "categorization")
+    expected_keys = {
+        "claims_total", "distinct_aspects", "lexical_matched", "llm_matched", "new_categories_proposed",
+        "unresolved_failures", "skipped_already_resolved", "skipped_manual_protected", "completed", "error",
+    }
+    assert expected_keys <= cat_event.payload.keys()
+    assert cat_event.payload["completed"] is True
+
+
+def test_disabling_the_kill_switch_skips_categorization_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENABLE_CLAIM_CATEGORIZATION", "false")
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    run = storage.get_run(run_id)
+    assert run.status == RunStatus.COMPLETED
+    cat_events = [e for e in storage.list_trace_events(run_id) if e.step_type.value == "categorization"]
+    assert cat_events == []  # skipped cleanly -- no trace event at all, not an empty/error one
+    assert storage.get_report(run_id) is not None  # the rest of the run still completed normally
+    claims = storage.list_claims(run_id)
+    assert claims and all(c.categorization_status is None for c in claims)  # never touched
+
+
+def test_incomplete_categorization_does_not_crash_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_categorize_claims(*args: object, **kwargs: object) -> CategorizationStats:
+        return CategorizationStats(claims_total=1, completed=False, error="RuntimeError: simulated failure")
+
+    # Patched on react_agent's own module -- that's the name run_react_loop
+    # actually calls (imported via `from .pipeline.taxonomy import
+    # categorize_claims`), not app.pipeline.taxonomy's copy of the name.
+    monkeypatch.setattr(react_agent_module, "categorize_claims", _fake_categorize_claims)
+
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    run = storage.get_run(run_id)
+    assert run.status == RunStatus.COMPLETED  # did not crash or fail the run
+    cat_event = next(e for e in storage.list_trace_events(run_id) if e.step_type.value == "categorization")
+    assert cat_event.payload["completed"] is False
+    assert "INCOMPLETE" in cat_event.message
+    assert storage.get_report(run_id) is not None  # summarize() still ran normally afterward
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 -- Claims-report eligibility gate orchestration (wiring only; the
+# gate's own branch logic is covered exhaustively in test_report_eligibility.py)
+# ---------------------------------------------------------------------------
+
+
+def test_claims_report_eligibility_trace_event_has_the_expected_payload(tmp_path: Path) -> None:
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    events = storage.list_trace_events(run_id)
+    eligibility_events = [e for e in events if e.step_type.value == "claims_report_eligibility"]
+    assert len(eligibility_events) == 1  # once per run, same as categorization
+    payload = eligibility_events[0].payload
+    assert {"eligible", "fallback_reason", "claims_total", "unresolved_failures", "resolved_ratio"} <= payload.keys()
+
+    step_order = [e.step_type.value for e in events]
+    assert step_order.index("categorization") < step_order.index("claims_report_eligibility") < step_order.index("summary")
+
+
+def test_claims_report_eligibility_still_traced_when_categorization_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ENABLE_CLAIM_CATEGORIZATION", "false")
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    eligibility_events = [e for e in storage.list_trace_events(run_id) if e.step_type.value == "claims_report_eligibility"]
+    assert len(eligibility_events) == 1  # still recorded -- "why not eligible" must never be a silent question
+    assert eligibility_events[0].payload["eligible"] is False
+    assert eligibility_events[0].payload["fallback_reason"] == "categorization_disabled"
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 -- eligibility gate is the single decision point for whether claims
+# are loaded and the Claims-based report path is actually taken
+# ---------------------------------------------------------------------------
+
+
+def test_report_takes_the_legacy_evidence_path_when_claims_report_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ENABLE_CLAIMS_REPORT", "false")
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    eligibility_events = [e for e in storage.list_trace_events(run_id) if e.step_type.value == "claims_report_eligibility"]
+    assert eligibility_events[0].payload["eligible"] is False
+    assert eligibility_events[0].payload["fallback_reason"] == "claims_report_disabled"
+
+    report = storage.get_report(run_id)
+    assert report is not None
+    assert report.top_pain_points  # a claim was actually extracted for PAIN_ITEM_1
+    assert "category_status" not in report.top_pain_points[0]  # legacy dict shape, not the Claims-path one
+
+
+def test_report_takes_the_claims_path_when_eligible(tmp_path: Path) -> None:
+    # A fresh product_category with no LLM configured: every claim resolves
+    # via Tier 1's zero-candidate propose-new (deterministic, no LLM needed),
+    # so unresolved_failures stays 0 and the resolved ratio is 1.0 -- clears
+    # the default 0.7 minimum, making this run eligible without any mocking.
+    storage, run_id = run_loop(tmp_path, [[PAIN_ITEM_1]], max_iterations=1, min_evidence_target=1)
+
+    eligibility_events = [e for e in storage.list_trace_events(run_id) if e.step_type.value == "claims_report_eligibility"]
+    assert eligibility_events[0].payload["eligible"] is True
+
+    report = storage.get_report(run_id)
+    assert report is not None
+    assert report.top_pain_points
+    assert "category_status" in report.top_pain_points[0]  # Claims-path dict shape

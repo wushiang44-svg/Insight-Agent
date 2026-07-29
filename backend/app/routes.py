@@ -11,9 +11,9 @@ from .collectors.reddit import RedditCollector
 from .collectors.reddit_browser import RedditBrowserCollector
 from .collectors.youtube import YoutubeCollector
 from .llm import DeepSeekClient
-from .models import DataSource, RunStatus
+from .models import CategoryStatus, DataSource, RunStatus
 from .run_manager import RunManager
-from .storage import DEFAULT_DB_PATH, Storage
+from .storage import DEFAULT_DB_PATH, CategoryTransitionError, Storage, _normalize_category_text
 
 router = APIRouter()
 run_manager = RunManager(DEFAULT_DB_PATH)
@@ -149,5 +149,168 @@ def get_report(run_id: str) -> dict:
                 raise HTTPException(status_code=409, detail=f"Run failed: {run.error}")
             raise HTTPException(status_code=409, detail="Report is not ready yet")
         return asdict(report)
+    finally:
+        storage.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3, Stage 8 -- Taxonomy Curation API. API-only (no frontend yet, per
+# plan) -- the routes here are thin wrappers around Storage's already-
+# validated transition methods (Stage 1), never raw SQL of their own.
+# ---------------------------------------------------------------------------
+
+
+class RenameCategoryRequest(BaseModel):
+    canonical_label: str = Field(min_length=1)
+
+
+class ManualCategorizeClaimRequest(BaseModel):
+    category_id: str = Field(min_length=1)
+
+
+def _category_transition_error_to_http(exc: CategoryTransitionError) -> HTTPException:
+    status_code = 404 if exc.code == "not_found" else 409
+    return HTTPException(status_code=status_code, detail=str(exc))
+
+
+@router.get("/categories")
+def list_categories(product_category: str, status: CategoryStatus | None = None, canonical_label: str | None = None) -> list[dict]:
+    """Browse a product_category's taxonomy. `canonical_label`, if given, is
+    an exact (normalized) lookup and ignores `status` -- returns 0 or 1
+    entries, never more, since (product_category, normalized_label) is
+    unique by construction."""
+    storage = _storage()
+    try:
+        if canonical_label is not None:
+            category = storage.get_category_by_label(product_category, canonical_label)
+            return [asdict(category)] if category is not None else []
+        return [asdict(category) for category in storage.list_categories(product_category, status)]
+    finally:
+        storage.close()
+
+
+@router.get("/categories/{category_id}")
+def get_category(category_id: str) -> dict:
+    storage = _storage()
+    try:
+        category = storage.get_category(category_id)
+        if category is None:
+            raise HTTPException(status_code=404, detail="Category not found")
+        return asdict(category)
+    finally:
+        storage.close()
+
+
+@router.post("/categories/{category_id}/approve")
+def approve_category(category_id: str) -> dict:
+    storage = _storage()
+    try:
+        try:
+            category = storage.approve_category(category_id)
+        except CategoryTransitionError as exc:
+            raise _category_transition_error_to_http(exc) from exc
+        return asdict(category)
+    finally:
+        storage.close()
+
+
+@router.post("/categories/{category_id}/rename")
+def rename_category(category_id: str, payload: RenameCategoryRequest) -> dict:
+    storage = _storage()
+    try:
+        try:
+            category = storage.rename_category(category_id, payload.canonical_label.strip())
+        except CategoryTransitionError as exc:
+            raise _category_transition_error_to_http(exc) from exc
+        return asdict(category)
+    finally:
+        storage.close()
+
+
+@router.post("/categories/{source_id}/merge/{target_id}")
+def merge_categories(source_id: str, target_id: str) -> dict:
+    storage = _storage()
+    try:
+        try:
+            category = storage.merge_category(source_id, target_id)
+        except CategoryTransitionError as exc:
+            raise _category_transition_error_to_http(exc) from exc
+        return asdict(category)
+    finally:
+        storage.close()
+
+
+@router.post("/categories/{category_id}/deprecate")
+def deprecate_category(category_id: str) -> dict:
+    storage = _storage()
+    try:
+        try:
+            category = storage.deprecate_category(category_id)
+        except CategoryTransitionError as exc:
+            raise _category_transition_error_to_http(exc) from exc
+        return asdict(category)
+    finally:
+        storage.close()
+
+
+@router.get("/categories/{category_id}/history")
+def get_category_history(category_id: str) -> list[dict]:
+    """Audit trail for one category -- timestamp (created_at), action, and
+    action-specific old/new values inside `detail` (e.g. merge's
+    target_category_id, rename's old_label/new_label, approve/deprecate's
+    from_status/to_status). No `actor` field: this app has no auth/identity
+    system, so attributing an entry to a specific person would be dishonest,
+    not just incomplete -- see models.CategoryAuditLogEntry's docstring."""
+    storage = _storage()
+    try:
+        category = storage.get_category(category_id)
+        if category is None:
+            raise HTTPException(status_code=404, detail="Category not found")
+        return [asdict(entry) for entry in storage.list_category_audit_log(category_id)]
+    finally:
+        storage.close()
+
+
+@router.post("/claims/{claim_id}/categorize")
+def manually_categorize_claim(claim_id: str, payload: ManualCategorizeClaimRequest) -> dict:
+    """A reviewer's direct, explicit assignment of one Claim to a canonical
+    category -- categorization_method="manual", categorization_status=
+    "resolved" (this codebase's existing vocabulary for "has a definitive
+    canonical_category", not a new "categorized" literal), confidence=1.0
+    (human-asserted, not a model's confidence score). override_manual=True
+    unconditionally: unlike categorize_claims()'s automatic batch pass (which
+    must never clobber a manual decision without that flag), a human acting
+    through THIS endpoint is always allowed to change a claim's category,
+    including correcting an earlier manual assignment -- that protection
+    exists to guard against the automatic pipeline, not against a reviewer's
+    own explicit action."""
+    storage = _storage()
+    try:
+        claim = storage.get_claim(claim_id)
+        if claim is None:
+            raise HTTPException(status_code=404, detail="Claim not found")
+        run = storage.get_run(claim.run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found for this claim")
+        category = storage.get_category(payload.category_id)
+        if category is None:
+            raise HTTPException(status_code=404, detail="Category not found")
+        if category.alias_of is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Category {payload.category_id} is an alias of {category.alias_of}; assign to the merge target instead",
+            )
+        if category.product_category != _normalize_category_text(run.product_category):
+            raise HTTPException(status_code=409, detail="Category does not belong to this claim's product_category")
+        storage.set_claims_categorization(
+            [claim_id],
+            canonical_category=category.category_id,
+            status="resolved",
+            method="manual",
+            confidence=1.0,
+            override_manual=True,
+        )
+        updated = storage.get_claim(claim_id)
+        return asdict(updated)
     finally:
         storage.close()

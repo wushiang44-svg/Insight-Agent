@@ -81,6 +81,16 @@ export interface ExampleQuote {
   subreddit: string;
 }
 
+// Phase 3 (Customer Demand Intelligence Pipeline): only present on aggregate
+// groups the Claims-based report path produced (report_source === "claims").
+// "approved"/"proposed" reflect the resolved canonical category's review
+// state; "uncategorized" is the deliberate overflow bucket for Claims
+// categorization couldn't resolve -- never split back out by aspect. null and
+// missing both mean "no taxonomy involved" (a legacy Evidence-based entry, or
+// an older payload from before this field existed) -- both must render
+// identically to each other and to a genuinely absent field.
+export type CategoryStatusOrNull = "approved" | "proposed" | "uncategorized" | null;
+
 export interface AspectGroup {
   aspect: string;
   count: number;
@@ -88,7 +98,10 @@ export interface AspectGroup {
   avg_confidence?: number;
   sentiment_counts?: Record<string, number>;
   example_quotes: ExampleQuote[];
+  category_status?: CategoryStatusOrNull;
 }
+
+export type ReportSource = "claims" | "legacy_evidence";
 
 export interface Report {
   run_id: string;
@@ -104,6 +117,15 @@ export interface Report {
   subreddit_counts: Record<string, number>;
   recommended_actions_zh: string[];
   summary_markdown_zh: string;
+  // Phase 3, Stage 7 -- optional/backward-compatible: a Report fetched from a
+  // run that predates these columns simply omits them. shipping_issues/
+  // seller_service_issues are absent (not just empty) on every legacy-path
+  // report and on any report generated before this field existed; treat
+  // "missing" and "empty array" identically everywhere they're read.
+  shipping_issues?: AspectGroup[];
+  seller_service_issues?: AspectGroup[];
+  report_source?: ReportSource;
+  fallback_reason?: string | null;
 }
 
 export interface Claim {
@@ -131,6 +153,15 @@ export interface Claim {
   merge_count: number;
   merged_claim_ids: string[] | null;
   merged_excerpts: string[] | null;
+  // Phase 3 categorization provenance -- all three null means categorization
+  // hasn't run for this claim yet (pre-Phase-3 claim, or the batch step was
+  // disabled). method="manual" means a reviewer assigned this claim directly
+  // (see api.manuallyCategorizeClaim below) -- automatic recategorization
+  // never overwrites it without an explicit override the merchant-facing UI
+  // does not expose.
+  categorization_status: "resolved" | "unresolved" | null;
+  categorization_method: "lexical_match" | "llm_match" | "proposed_new" | "manual" | null;
+  categorization_confidence: number | null;
 }
 
 export interface CreateRunInput {
@@ -141,6 +172,55 @@ export interface CreateRunInput {
   min_evidence_target: number;
   data_source: DataSource;
   uploaded_items: Record<string, unknown>[];
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3, Stage 8 -- Taxonomy Curation API types. Field lists match exactly
+// what the backend's routes.py/models.py return -- see CanonicalCategory /
+// CategoryAuditLogEntry in app/models.py and the /categories* routes. Nothing
+// here is invented beyond what those endpoints actually send back.
+// ---------------------------------------------------------------------------
+
+export type CanonicalCategoryStatus = "proposed" | "approved" | "deprecated";
+
+export interface CanonicalCategory {
+  category_id: string;
+  product_category: string;
+  canonical_label: string;
+  normalized_label: string;
+  status: CanonicalCategoryStatus;
+  alias_of: string | null;
+  first_seen_aspect_raw: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CategoryAuditAction = "approve" | "merge" | "deprecate" | "rename";
+
+export interface CategoryAuditLogEntry {
+  id: number;
+  category_id: string;
+  action: CategoryAuditAction;
+  // Shape depends on `action`: merge -> {target_category_id}, rename ->
+  // {old_label, new_label}, approve/deprecate -> {from_status, to_status}.
+  // No `actor` field -- the backend has no auth/identity system, so one is
+  // never returned and the frontend must never fabricate one.
+  detail: Record<string, unknown>;
+  created_at: string;
+}
+
+// POST /claims/{id}/categorize returns asdict(claim) directly (routes.py),
+// which is the RAW Claim shape -- unlike GET /runs/{run_id}/claims, it does
+// NOT include the original_source_url/original_excerpt enrichment (those are
+// computed only by that list endpoint). Only the fields this app actually
+// reads from the response are declared; callers that need the full enriched
+// shape re-fetch via api.getClaims() afterward (see RunDetail.tsx).
+export interface ManualCategorizeClaimResponse {
+  claim_id: string;
+  canonical_category: string | null;
+  categorization_status: string | null;
+  categorization_method: string | null;
+  categorization_confidence: number | null;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -164,4 +244,35 @@ export const api = {
   getReport: (runId: string) => request<Report>(`/runs/${runId}/report`),
   getClaims: (runId: string) => request<Claim[]>(`/runs/${runId}/claims`),
   getConfig: () => request<AppConfig>("/config"),
+
+  // Phase 3, Stage 8 -- Taxonomy Curation API. `status`/`canonicalLabel` are
+  // mutually exclusive on the backend (GET /categories) -- passing a label
+  // does an exact lookup and ignores `status`.
+  listCategories: (productCategory: string, opts?: { status?: CanonicalCategoryStatus; canonicalLabel?: string }) => {
+    const params = new URLSearchParams({ product_category: productCategory });
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.canonicalLabel) params.set("canonical_label", opts.canonicalLabel);
+    return request<CanonicalCategory[]>(`/categories?${params.toString()}`);
+  },
+  getCategory: (categoryId: string) => request<CanonicalCategory>(`/categories/${encodeURIComponent(categoryId)}`),
+  approveCategory: (categoryId: string) =>
+    request<CanonicalCategory>(`/categories/${encodeURIComponent(categoryId)}/approve`, { method: "POST" }),
+  renameCategory: (categoryId: string, canonicalLabel: string) =>
+    request<CanonicalCategory>(`/categories/${encodeURIComponent(categoryId)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ canonical_label: canonicalLabel }),
+    }),
+  mergeCategories: (sourceId: string, targetId: string) =>
+    request<CanonicalCategory>(`/categories/${encodeURIComponent(sourceId)}/merge/${encodeURIComponent(targetId)}`, {
+      method: "POST",
+    }),
+  deprecateCategory: (categoryId: string) =>
+    request<CanonicalCategory>(`/categories/${encodeURIComponent(categoryId)}/deprecate`, { method: "POST" }),
+  getCategoryHistory: (categoryId: string) =>
+    request<CategoryAuditLogEntry[]>(`/categories/${encodeURIComponent(categoryId)}/history`),
+  manuallyCategorizeClaim: (claimId: string, categoryId: string) =>
+    request<ManualCategorizeClaimResponse>(`/claims/${encodeURIComponent(claimId)}/categorize`, {
+      method: "POST",
+      body: JSON.stringify({ category_id: categoryId }),
+    }),
 };

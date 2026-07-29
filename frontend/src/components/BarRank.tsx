@@ -4,6 +4,12 @@ export interface BarRankItem {
   value: number;
   displayValue?: string;
   color?: string;
+  // Generic, optional pill rendered after the label -- e.g. a review-status
+  // marker. This component has no idea what the badge text means or why it's
+  // there; deciding whether/what to pass is entirely the caller's business
+  // logic (see Report.tsx's AspectSection, which only sets this for a
+  // Claims-path entry with category_status === "proposed").
+  badge?: string;
 }
 
 /**
@@ -18,7 +24,8 @@ export function BarRank({ items, color = "var(--accent)" }: { items: BarRankItem
       {items.map((item) => (
         <div className="bar-rank-row" key={item.key}>
           <div className="bar-rank-label" title={item.label}>
-            {item.label}
+            <span className="bar-rank-label-text">{item.label}</span>
+            {item.badge && <span className="bar-rank-badge">{item.badge}</span>}
           </div>
           <div className="bar-rank-track">
             <div

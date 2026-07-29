@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
 from .collectors.base import Collector
-from .llm import DeepSeekClient, fast_model, pro_model
+from .llm import DeepSeekClient, fast_model, load_dotenv, pro_model
 from .models import (
+    CanonicalCategory,
+    CategoryStatus,
+    Claim,
+    ClaimType,
     CollectedItem,
     Evidence,
     InsightType,
     Report,
+    ReportSource,
     RunStatus,
     StepType,
     TraceEvent,
@@ -20,9 +28,16 @@ from .models import (
 )
 from .pipeline.claims import enable_claim_extraction, extract_claims
 from .pipeline.screening import ScreeningResult, screen_item
+from .pipeline.taxonomy import CategorizationStats, categorize_claims, enable_claim_categorization
 from .storage import Storage
 
 DIMINISHING_RETURNS_WINDOW = 2
+
+# Explicit policy for CLAIMS_REPORT_MIN_RESOLVED_RATIO if it's set to something
+# unusable: never let a misconfigured env var crash the run or silently gate
+# every run closed/open -- fall back to this default for anything that isn't a
+# finite number, and clamp anything finite but outside [0.0, 1.0].
+_DEFAULT_CLAIMS_REPORT_MIN_RESOLVED_RATIO = 0.7
 
 
 @dataclass
@@ -62,6 +77,91 @@ class IterationScreeningStats:
     has_product_signal_count: int = 0
     llm_screened: int = 0
     fallback_screened: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 3, Stage 5 -- Claims-report eligibility gate. Determines ONLY whether
+# the (not-yet-built) Claims-based report path would be usable this run --
+# does not itself change what summarize() does. See docs/phase3_claims_taxonomy_plan.md.
+# ---------------------------------------------------------------------------
+
+
+def enable_claims_based_report() -> bool:
+    """Kill switch for the Claims-report path -- independent of
+    enable_claim_categorization() (Phase 3, pipeline/taxonomy.py), which
+    controls whether categorization runs at all. This one controls only
+    whether a (future) Claims-based report is ever considered eligible,
+    regardless of how well categorization went."""
+    load_dotenv()
+    raw = os.environ.get("ENABLE_CLAIMS_REPORT", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def claims_report_min_resolved_ratio() -> float:
+    """Reads CLAIMS_REPORT_MIN_RESOLVED_RATIO. Explicit policy for a
+    misconfigured value, so a bad env var can never crash the run or silently
+    produce a nonsensical gate:
+    - unset/empty -> the default (_DEFAULT_CLAIMS_REPORT_MIN_RESOLVED_RATIO)
+    - not parseable as a float (e.g. "high", "") -> the default
+    - parses but is NaN or +/-Infinity -> the default
+    - a valid finite number outside [0.0, 1.0] -> CLAMPED into range (not
+      rejected -- consistent with pipeline/taxonomy.py's _sanitize_confidence,
+      which clamps rather than rejects an out-of-range-but-finite LLM value)
+    """
+    load_dotenv()
+    raw = os.environ.get("CLAIMS_REPORT_MIN_RESOLVED_RATIO", "").strip()
+    if not raw:
+        return _DEFAULT_CLAIMS_REPORT_MIN_RESOLVED_RATIO
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_CLAIMS_REPORT_MIN_RESOLVED_RATIO
+    if not math.isfinite(value):
+        return _DEFAULT_CLAIMS_REPORT_MIN_RESOLVED_RATIO
+    return max(0.0, min(value, 1.0))
+
+
+def _resolved_ratio(cat_stats: CategorizationStats | None) -> float | None:
+    """The fraction of this run's categorization attempt that did NOT end up
+    unresolved -- None when there's nothing to compute a ratio over
+    (categorization never ran, or there were zero claims). Deliberately the
+    exact formula specified for this gate: claims that were skipped this pass
+    (already resolved earlier, or manually protected) count toward the
+    numerator just like a freshly-resolved claim would -- only a genuine
+    unresolved_failures counts against it."""
+    if cat_stats is None or cat_stats.claims_total == 0:
+        return None
+    return (cat_stats.claims_total - cat_stats.unresolved_failures) / cat_stats.claims_total
+
+
+def _claims_report_eligible(
+    run_id: str, storage: Storage, cat_stats: CategorizationStats | None
+) -> tuple[bool, str | None]:
+    """Decides whether the Claims-based report path is eligible for this run.
+    Reads ONLY the CategorizationStats this run's own categorize_claims() call
+    already produced -- never re-queries the database for claims (run_id/
+    storage are accepted for interface stability and future use, e.g. logging,
+    not for an extra query here). `claims` being non-empty is deliberately NOT
+    the test on its own -- see the four explicit rejection reasons below.
+
+    Returns (True, None) when eligible, or (False, reason) where reason is one
+    of: "claims_report_disabled", "categorization_disabled",
+    "categorization_incomplete", "no_claims", or
+    "low_resolved_coverage:<ratio formatted to 2 decimal places>".
+    """
+    if not enable_claims_based_report():
+        return False, "claims_report_disabled"
+    if cat_stats is None:
+        return False, "categorization_disabled"
+    if not cat_stats.completed:
+        return False, "categorization_incomplete"
+    if cat_stats.claims_total == 0:
+        return False, "no_claims"
+    ratio = _resolved_ratio(cat_stats)
+    assert ratio is not None  # claims_total == 0 already returned above
+    if ratio < claims_report_min_resolved_ratio():
+        return False, f"low_resolved_coverage:{ratio:.2f}"
+    return True, None
 
 
 def run_react_loop(
@@ -226,7 +326,62 @@ def run_react_loop(
                 break
 
         storage.update_run_progress(run_id, iteration, len(collected), RunStatus.SUMMARIZING)
-        report = summarize(run_id, run.product_category, collected, llm)
+
+        # Phase 3 (Customer Demand Intelligence Pipeline): categorizes this
+        # run's Claims against the product_category's canonical taxonomy --
+        # a separate, run-level batch step, deliberately run once here (never
+        # per-iteration, never bolted onto extract_claims()). Always the safe
+        # default (force=False, override_manual=False); a human-run
+        # maintenance entry point is the only caller ever expected to pass
+        # anything else.
+        cat_stats: CategorizationStats | None = None
+        if enable_claim_categorization():
+            run_claims = storage.list_claims(run_id)
+            cat_stats = categorize_claims(run_id, run.product_category, run_claims, storage, llm)
+            trace(
+                iteration,
+                StepType.CATEGORIZATION,
+                (
+                    f"Categorized claims against the taxonomy: {cat_stats.lexical_matched} lexical match(es), "
+                    f"{cat_stats.llm_matched} LLM match(es), {cat_stats.new_categories_proposed} new categor"
+                    f"{'y' if cat_stats.new_categories_proposed == 1 else 'ies'} proposed, "
+                    f"{cat_stats.unresolved_failures} unresolved, {cat_stats.skipped_already_resolved} already "
+                    f"categorized, {cat_stats.skipped_manual_protected} manually protected"
+                    + ("" if cat_stats.completed else f" -- INCOMPLETE: {cat_stats.error}")
+                ),
+                asdict(cat_stats),
+            )
+
+        # Stage 5: decides ONLY whether the (not-yet-built) Claims-based report
+        # path would be eligible this run -- always traced, regardless of
+        # whether categorization ran, so "why wasn't it eligible" is never a
+        # silent question.
+        eligible, fallback_reason = _claims_report_eligible(run_id, storage, cat_stats)
+        trace(
+            iteration,
+            StepType.CLAIMS_REPORT_ELIGIBILITY,
+            "Claims-based report is eligible" if eligible else f"Claims-based report not eligible: {fallback_reason}",
+            {
+                "eligible": eligible,
+                "fallback_reason": fallback_reason,
+                "claims_total": cat_stats.claims_total if cat_stats is not None else 0,
+                "unresolved_failures": cat_stats.unresolved_failures if cat_stats is not None else 0,
+                "resolved_ratio": _resolved_ratio(cat_stats),
+            },
+        )
+
+        # Stage 6: the eligibility gate above is the single decision point --
+        # Claims/categories are loaded ONLY when eligible, never loaded first
+        # and then ignored. When not eligible, summarize() gets empty lists
+        # and takes the legacy Evidence-based path by construction (branching
+        # on "was I handed any claims").
+        claims: list[Claim] = []
+        categories: list[CanonicalCategory] = []
+        if eligible:
+            claims = storage.list_claims(run_id)
+            categories = storage.list_categories(run.product_category)
+
+        report = summarize(run_id, run.product_category, collected, claims, categories, llm, fallback_reason)
         storage.save_report(report)
         trace(iteration, StepType.SUMMARY, f"Generated the merchant report based on {len(collected)} piece(s) of evidence", {"evidence_count": len(collected)})
         storage.update_run_status(run_id, RunStatus.COMPLETED)
@@ -474,31 +629,332 @@ def _check_sufficiency_fallback(collected: list[Evidence], min_evidence_target: 
 
 
 # ---------------------------------------------------------------------------
-# Summarize: turn collected evidence into a merchant-facing report
+# Phase 3, Stage 6 -- Claims-based aggregation pipeline: resolve taxonomy ->
+# aggregate -> build report inputs. Pure, in-memory, no Storage/LLM calls
+# anywhere in this section -- everything here is a function of already-loaded
+# data, which is what makes it independently unit-testable. Does NOT yet
+# change the Report schema (no report_source/fallback_reason persistence,
+# no shipping_issues/seller_service_issues columns) -- that's a later stage.
 # ---------------------------------------------------------------------------
 
-def summarize(run_id: str, product_category: str, collected: list[Evidence], llm: DeepSeekClient) -> Report:
-    pain_points = _aggregate_by_aspect(collected, InsightType.PAIN_POINT)
-    feature_requests = _aggregate_by_aspect(collected, InsightType.FEATURE_REQUEST)
-    praised = _aggregate_by_aspect(collected, InsightType.PRAISE)
-    comparisons = _aggregate_by_aspect(collected, InsightType.COMPARISON)
+_UNCATEGORIZED_LABEL = "Uncategorized"
+
+
+@dataclass
+class ResolvedCategory:
+    category_id: str | None  # None for "uncategorized"
+    label: str
+    status: str  # "approved" | "proposed" | "uncategorized"
+
+
+def _resolve_categories(claims: list[Claim], categories: list[CanonicalCategory]) -> dict[str, ResolvedCategory]:
+    """Resolves each claim's canonical_category through alias_of exactly one
+    hop (merge_category() never lets an alias's own alias_of be set, so a
+    single dict lookup is always enough -- no loop needed). Pure, in-memory,
+    no DB/LLM calls. Falls back to "uncategorized" for: no canonical_category
+    at all, a canonical_category that isn't in `categories`, a category whose
+    alias_of points at something not in `categories`, or a category (after
+    resolving through alias_of, if any) that is deprecated with no further
+    alias -- deprecated-with-no-alias claims are never silently dropped, they
+    land in the same explicit uncategorized bucket as never-categorized ones.
+    """
+    by_id = {c.category_id: c for c in categories}
+    uncategorized = ResolvedCategory(category_id=None, label=_UNCATEGORIZED_LABEL, status="uncategorized")
+
+    def resolve_one(category_id: str | None) -> ResolvedCategory:
+        if category_id is None:
+            return uncategorized
+        category = by_id.get(category_id)
+        if category is None:
+            return uncategorized
+        if category.alias_of is not None:
+            target = by_id.get(category.alias_of)
+            if target is None:
+                return uncategorized
+            category = target
+        if category.status == CategoryStatus.DEPRECATED:
+            return uncategorized
+        return ResolvedCategory(category_id=category.category_id, label=category.canonical_label, status=category.status.value)
+
+    return {claim.claim_id: resolve_one(claim.canonical_category) for claim in claims}
+
+
+_REDDIT_THREAD_PATTERN = re.compile(r"^(https?://[^/]+/r/[^/]+/comments/[^/]+)")
+
+
+def _thread_key(evidence: Evidence) -> str:
+    """Best-effort, source-specific -- see the plan doc's "thread count"
+    section. Reddit permalinks share a stable prefix per post
+    (scheme+host+/r/<sub>/comments/<post_id>); any URL that doesn't match
+    (Amazon, YouTube, JSON upload, or anything unexpected) falls back to the
+    evidence's own id, which degenerates "distinct thread count" to "distinct
+    evidence count" for those sources rather than fabricating a wrong number.
+    Detected structurally from the URL itself rather than a passed-in
+    DataSource flag, so this function's signature stays exactly what the
+    aggregation step needs."""
+    match = _REDDIT_THREAD_PATTERN.match(evidence.source_url)
+    return match.group(1) if match else evidence.evidence_id
+
+
+@dataclass
+class AggregateGroup:
+    claim_type: ClaimType
+    category_key: str  # a category_id, or the literal string "uncategorized"
+    label: str
+    category_status: str  # "approved" | "proposed" | "uncategorized"
+    count: int
+    subreddit_count: int
+    avg_confidence: float
+    sentiment_counts: dict[str, int]
+    example_quotes: list[dict[str, Any]]
+    # Support-threshold inputs (Stage 6 requirement) -- irrelevant to the four
+    # always-surfaced sections, only consulted by _build_report_inputs for
+    # shipping_issues/seller_service_issues gating.
+    evidence_count: int
+    thread_count: int
+
+
+def _aggregate_claims_by_category(
+    claims: list[Claim], resolved: dict[str, ResolvedCategory], evidence_by_id: dict[str, Evidence]
+) -> dict[tuple[ClaimType, str], AggregateGroup]:
+    """Groups by (claim_type, resolved_category) -- category_key is the
+    resolved category's id for approved/proposed groups, or the literal
+    string "uncategorized". Every claim whose resolution is "uncategorized"
+    (regardless of its own aspect_raw) shares ONE bucket per claim_type --
+    never split back out by aspect_raw, which would reintroduce exactly the
+    fragmentation problem this phase exists to fix, for precisely the
+    lowest-trust population. Pure grouping/counting, no I/O."""
+    grouped: dict[tuple[ClaimType, str], list[Claim]] = {}
+    for claim in claims:
+        resolution = resolved.get(claim.claim_id)
+        if resolution is None:
+            continue  # defensive: every claim passed in is expected to have a resolution
+        category_key = resolution.category_id or "uncategorized"
+        grouped.setdefault((claim.claim_type, category_key), []).append(claim)
+
+    aggregated: dict[tuple[ClaimType, str], AggregateGroup] = {}
+    for (claim_type, category_key), group_claims in grouped.items():
+        label = resolved[group_claims[0].claim_id].label
+        category_status = resolved[group_claims[0].claim_id].status
+        evidences = [evidence_by_id[c.evidence_id] for c in group_claims if c.evidence_id in evidence_by_id]
+
+        quote_candidates = sorted(group_claims, key=lambda c: c.confidence, reverse=True)[:3]
+        example_quotes = []
+        for c in quote_candidates:
+            evidence = evidence_by_id.get(c.evidence_id)
+            example_quotes.append(
+                {
+                    "quote": c.source_excerpt or (evidence.quote if evidence else ""),
+                    "source_url": evidence.source_url if evidence else "",
+                    "subreddit": evidence.subreddit if evidence else "",
+                }
+            )
+
+        aggregated[(claim_type, category_key)] = AggregateGroup(
+            claim_type=claim_type,
+            category_key=category_key,
+            label=label,
+            category_status=category_status,
+            count=len(group_claims),
+            subreddit_count=len({e.subreddit for e in evidences}),
+            avg_confidence=round(sum(c.confidence for c in group_claims) / len(group_claims), 2),
+            sentiment_counts=dict(Counter(c.sentiment.value for c in group_claims)),
+            example_quotes=example_quotes,
+            evidence_count=len({c.evidence_id for c in group_claims}),
+            thread_count=len({_thread_key(e) for e in evidences}),
+        )
+    return aggregated
+
+
+@dataclass
+class ReportInputs:
+    top_pain_points: list[dict[str, Any]]
+    feature_requests: list[dict[str, Any]]
+    praised_aspects: list[dict[str, Any]]
+    competitor_mentions: list[dict[str, Any]]
+    shipping_issues: list[dict[str, Any]]
+    seller_service_issues: list[dict[str, Any]]
+
+
+_CLAIM_TYPE_SECTION: dict[ClaimType, str] = {
+    ClaimType.PROBLEM: "top_pain_points",
+    ClaimType.FEATURE_REQUEST: "feature_requests",
+    ClaimType.PRAISE: "praised_aspects",
+    ClaimType.COMPARISON: "competitor_mentions",
+    ClaimType.SHIPPING_ISSUE: "shipping_issues",
+    ClaimType.SELLER_SERVICE_ISSUE: "seller_service_issues",
+    # QUESTION, OBSERVATION, NOISE are deliberately absent -- never reach the
+    # report, matching today's InsightType.QUESTION/NOISE gap exactly.
+}
+_GATED_SECTIONS = {"shipping_issues", "seller_service_issues"}
+
+# Small starting defaults, not yet validated on real proposed-category volume
+# -- flagged for tuning the same way screening.py's _LOW_INFORMATION_MAX_CHARS
+# and pipeline/taxonomy.py's lexical-similarity thresholds are. Shared across
+# both gated sections rather than six separate per-section env vars.
+_SHIPPING_SERVICE_MIN_CLAIMS_DEFAULT = 2
+_SHIPPING_SERVICE_MIN_EVIDENCE_DEFAULT = 2
+_SHIPPING_SERVICE_MIN_THREADS_DEFAULT = 1
+
+
+def _read_min_count_env(name: str, default: int) -> int:
+    """Same safe-fallback philosophy as claims_report_min_resolved_ratio():
+    unset/non-numeric -> default; a valid-but-negative count is clamped to 0
+    (meaning "no minimum"), never rejected or crashing the run."""
+    load_dotenv()
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(0, value)
+
+
+def _shipping_service_min_claims() -> int:
+    return _read_min_count_env("SHIPPING_SERVICE_MIN_CLAIMS", _SHIPPING_SERVICE_MIN_CLAIMS_DEFAULT)
+
+
+def _shipping_service_min_evidence() -> int:
+    return _read_min_count_env("SHIPPING_SERVICE_MIN_EVIDENCE", _SHIPPING_SERVICE_MIN_EVIDENCE_DEFAULT)
+
+
+def _shipping_service_min_threads() -> int:
+    return _read_min_count_env("SHIPPING_SERVICE_MIN_THREADS", _SHIPPING_SERVICE_MIN_THREADS_DEFAULT)
+
+
+def _aggregate_group_to_dict(group: AggregateGroup) -> dict[str, Any]:
+    return {
+        "aspect": group.label,
+        "count": group.count,
+        "subreddit_count": group.subreddit_count,
+        "avg_confidence": group.avg_confidence,
+        "sentiment_counts": group.sentiment_counts,
+        "example_quotes": group.example_quotes,
+        "category_status": group.category_status,
+    }
+
+
+def _build_report_inputs(aggregated: dict[tuple[ClaimType, str], AggregateGroup]) -> ReportInputs:
+    """Turns the full aggregate set into the specific lists that become
+    Report fields. This is where the shipping/seller-service support-
+    threshold gating is applied -- a group only lands in shipping_issues/
+    seller_service_issues if it clears all three configured minimums (claim
+    count, distinct evidence count, distinct thread count). The four
+    always-surfaced sections are unfiltered, sorted by count descending, same
+    as _aggregate_by_aspect() today. No truncation happens here -- the
+    existing [:8]-for-the-LLM-prompt truncation stays inside _summarize_llm(),
+    unchanged."""
+    sections: dict[str, list[dict[str, Any]]] = {name: [] for name in set(_CLAIM_TYPE_SECTION.values())}
+    min_claims = _shipping_service_min_claims()
+    min_evidence = _shipping_service_min_evidence()
+    min_threads = _shipping_service_min_threads()
+
+    for (claim_type, _category_key), group in aggregated.items():
+        section_name = _CLAIM_TYPE_SECTION.get(claim_type)
+        if section_name is None:
+            continue
+        if section_name in _GATED_SECTIONS and (
+            group.count < min_claims or group.evidence_count < min_evidence or group.thread_count < min_threads
+        ):
+            continue
+        sections[section_name].append(_aggregate_group_to_dict(group))
+
+    for entries in sections.values():
+        entries.sort(key=lambda entry: entry["count"], reverse=True)
+
+    return ReportInputs(
+        top_pain_points=sections["top_pain_points"],
+        feature_requests=sections["feature_requests"],
+        praised_aspects=sections["praised_aspects"],
+        competitor_mentions=sections["competitor_mentions"],
+        shipping_issues=sections["shipping_issues"],
+        seller_service_issues=sections["seller_service_issues"],
+    )
+
+
+def _build_report_inputs_from_evidence(collected: list[Evidence]) -> ReportInputs:
+    """Legacy path, wrapping the untouched _aggregate_by_aspect() so both
+    branches converge on the same ReportInputs shape before narrative
+    generation. Evidence has no shipping_issue/seller_service_issue concept
+    of its own (InsightType doesn't distinguish them from pain_point), so
+    those two sections are simply empty here -- not a regression, the legacy
+    report never had them either."""
+    return ReportInputs(
+        top_pain_points=_aggregate_by_aspect(collected, InsightType.PAIN_POINT),
+        feature_requests=_aggregate_by_aspect(collected, InsightType.FEATURE_REQUEST),
+        praised_aspects=_aggregate_by_aspect(collected, InsightType.PRAISE),
+        competitor_mentions=_aggregate_by_aspect(collected, InsightType.COMPARISON),
+        shipping_issues=[],
+        seller_service_issues=[],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Summarize: turn collected evidence (or, when eligible, categorized Claims)
+# into a merchant-facing report
+# ---------------------------------------------------------------------------
+
+def summarize(
+    run_id: str,
+    product_category: str,
+    collected: list[Evidence],
+    claims: list[Claim],
+    categories: list[CanonicalCategory],
+    llm: DeepSeekClient,
+    fallback_reason: str | None = None,
+) -> Report:
+    """Thin orchestrator: resolve -> aggregate -> build report inputs ->
+    generate narrative. Does not decide eligibility itself, and does not
+    recompute or re-infer it -- the caller (run_react_loop) already resolved
+    that once via _claims_report_eligible() and passes both the resulting
+    `claims` (populated only when eligible, otherwise empty) and whatever
+    `fallback_reason` that same call produced (None when the Claims path was
+    actually used). This function just branches on "was I handed any claims,"
+    which by construction only happens when they passed the gate, and stamps
+    report_source/fallback_reason onto the returned Report either way, so
+    every report -- not just fallback ones -- is traceable about which path
+    produced it."""
+    if claims:
+        resolved = _resolve_categories(claims, categories)
+        evidence_by_id = {e.evidence_id: e for e in collected}
+        aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+        report_inputs = _build_report_inputs(aggregated)
+        report_source = ReportSource.CLAIMS
+    else:
+        report_inputs = _build_report_inputs_from_evidence(collected)
+        report_source = ReportSource.LEGACY_EVIDENCE
+
+    # fallback_reason is only ever meaningful for the legacy path -- forced to
+    # None here (regardless of what was passed in) whenever claims actually
+    # produced the report, so the documented invariant on Report itself
+    # ("fallback_reason is None precisely when report_source is claims")
+    # can't be violated by a caller mistake, without this function
+    # recomputing or re-inferring eligibility itself.
+    if report_source is ReportSource.CLAIMS:
+        fallback_reason = None
+
     sentiment_breakdown = dict(Counter(item.sentiment.value for item in collected))
 
     if llm.available():
         try:
-            narrative = _summarize_llm(product_category, collected, pain_points, feature_requests, praised, llm)
+            narrative = _summarize_llm(
+                product_category, collected, report_inputs.top_pain_points, report_inputs.feature_requests,
+                report_inputs.praised_aspects, llm,
+            )
         except Exception:
-            narrative = _summarize_fallback(product_category, pain_points, feature_requests)
+            narrative = _summarize_fallback(product_category, report_inputs.top_pain_points, report_inputs.feature_requests)
     else:
-        narrative = _summarize_fallback(product_category, pain_points, feature_requests)
+        narrative = _summarize_fallback(product_category, report_inputs.top_pain_points, report_inputs.feature_requests)
 
     return Report(
         run_id=run_id,
         generated_at=utc_now(),
-        top_pain_points=pain_points,
-        feature_requests=feature_requests,
-        praised_aspects=praised,
-        competitor_mentions=comparisons,
+        top_pain_points=report_inputs.top_pain_points,
+        feature_requests=report_inputs.feature_requests,
+        praised_aspects=report_inputs.praised_aspects,
+        competitor_mentions=report_inputs.competitor_mentions,
         sentiment_breakdown=sentiment_breakdown,
         recommended_actions=narrative["recommended_actions"],
         summary_markdown=narrative["summary_markdown"],
@@ -506,6 +962,10 @@ def summarize(run_id: str, product_category: str, collected: list[Evidence], llm
         subreddit_counts=dict(Counter(item.subreddit for item in collected)),
         recommended_actions_zh=narrative["recommended_actions_zh"],
         summary_markdown_zh=narrative["summary_markdown_zh"],
+        shipping_issues=report_inputs.shipping_issues,
+        seller_service_issues=report_inputs.seller_service_issues,
+        report_source=report_source,
+        fallback_reason=fallback_reason,
     )
 
 

@@ -15,6 +15,7 @@ import type { Language } from "../lib/i18n";
 import { useSourceMeta } from "../lib/sources";
 import type { SourceMeta } from "../lib/sources";
 import { translateAspect } from "../lib/aspectTranslations";
+import { parseFallbackReason, resolveReportSource } from "../lib/reportSource";
 
 interface PriorityItem {
   key: string;
@@ -84,6 +85,22 @@ function whyBullets(item: PriorityItem, meta: SourceMeta, t: (key: string, vars?
   return bullets;
 }
 
+// A Claims-path entry's display label and review-status badge. Never applies
+// to a legacy Evidence entry (category_status is undefined/null there, so
+// both helpers fall through to today's unchanged behavior). "uncategorized"
+// gets the frontend's own localized neutral label instead of whatever raw
+// string the backend sent (the backend's own placeholder label is
+// English-only and not meant to be shown as-is to a Chinese-language user) --
+// every OTHER status keeps the backend's real, meaningful aspect label.
+function categoryDisplayLabel(group: AspectGroup, language: Language, t: (key: string) => string): string {
+  if (group.category_status === "uncategorized") return t("report.category.uncategorized");
+  return translateAspect(group.aspect, language);
+}
+
+function categoryBadge(group: AspectGroup, t: (key: string) => string): string | undefined {
+  return group.category_status === "proposed" ? t("report.category.pendingReview") : undefined;
+}
+
 function AspectSection({
   category,
   groups,
@@ -113,9 +130,10 @@ function AspectSection({
             color={style.color}
             items={groups.map((group) => ({
               key: group.aspect,
-              label: translateAspect(group.aspect, language),
+              label: categoryDisplayLabel(group, language, t),
               value: group.count,
               displayValue: total > 0 ? `${Math.round((group.count / total) * 100)}%` : `${group.count}`,
+              badge: categoryBadge(group, t),
             }))}
           />
 
@@ -124,7 +142,8 @@ function AspectSection({
               <details className="evidence-group" key={group.aspect}>
                 <summary>
                   <span className="evidence-group-dot" style={{ background: style.color }} />
-                  <span className="evidence-group-aspect">{translateAspect(group.aspect, language)}</span>
+                  <span className="evidence-group-aspect">{categoryDisplayLabel(group, language, t)}</span>
+                  {categoryBadge(group, t) && <span className="bar-rank-badge">{categoryBadge(group, t)}</span>}
                   <span className="evidence-group-count">
                     {group.example_quotes.length} {group.example_quotes.length === 1 ? meta.itemNounSingular : meta.itemNoun}
                   </span>
@@ -148,6 +167,42 @@ function AspectSection({
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+// report_source/fallback_reason: visually secondary, never alarming. Missing
+// report_source (an older payload) reads as "legacy_evidence", not an error.
+function ReportSourceMeta({ report }: { report: ReportData }) {
+  const { t } = useLanguage();
+  const source = resolveReportSource(report.report_source);
+  const parsedFallback = parseFallbackReason(report.fallback_reason);
+
+  function fallbackMessage(): string {
+    if (parsedFallback.kind === "low_resolved_coverage") {
+      return t("report.fallback.low_resolved_coverage", { percent: parsedFallback.percent ?? 0 });
+    }
+    return t(`report.fallback.${parsedFallback.kind}`);
+  }
+
+  return (
+    <section className="card">
+      <details className="tech-details">
+        <summary>{t("report.details.title")}</summary>
+        <div className="muted" style={{ marginTop: "var(--space-2)" }}>
+          {t("report.source.label")}: {t(`report.source.${source}`)}
+        </div>
+        {source === "claims" && (
+          <div className="muted" style={{ marginTop: "var(--space-2)" }}>
+            {t("report.details.snapshotNote")}
+          </div>
+        )}
+        {report.fallback_reason && (
+          <div className="muted" style={{ marginTop: "var(--space-2)" }}>
+            {fallbackMessage()}
+          </div>
+        )}
+      </details>
     </section>
   );
 }
@@ -298,6 +353,17 @@ export function Report() {
       <AspectSection category="feature_request" groups={report.feature_requests} meta={meta} />
       <AspectSection category="praise" groups={report.praised_aspects} meta={meta} />
       <AspectSection category="comparison" groups={report.competitor_mentions} meta={meta} />
+      {/* Phase 3, Stage 9: absent/undefined and empty are treated identically --
+          both an older payload (field never existed) and a payload where nothing
+          cleared the support threshold render nothing here, not an empty-state
+          message (unlike the four sections above, which always render with
+          their own "nothing found yet" text). */}
+      {(report.shipping_issues?.length ?? 0) > 0 && (
+        <AspectSection category="shipping_issue" groups={report.shipping_issues!} meta={meta} />
+      )}
+      {(report.seller_service_issues?.length ?? 0) > 0 && (
+        <AspectSection category="seller_service_issue" groups={report.seller_service_issues!} meta={meta} />
+      )}
 
       <section className="card">
         <div className="section-header">
@@ -381,6 +447,8 @@ export function Report() {
           </pre>
         </details>
       </section>
+
+      <ReportSourceMeta report={report} />
     </div>
   );
 }

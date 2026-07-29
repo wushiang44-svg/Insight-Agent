@@ -3,6 +3,7 @@ import { CreateRun } from "./pages/CreateRun";
 import { Report } from "./pages/Report";
 import { RunDetail } from "./pages/RunDetail";
 import { RunsList } from "./pages/RunsList";
+import { Taxonomy } from "./pages/Taxonomy";
 import { LanguageProvider, useLanguage } from "./lib/i18n";
 import type { Language } from "./lib/i18n";
 
@@ -36,6 +37,9 @@ function AppShell() {
         <Link to="/" className="brand">
           {t("app.title")}
         </Link>
+        <nav className="app-nav">
+          <Link to="/taxonomy">{t("nav.taxonomy")}</Link>
+        </nav>
         <LanguageSwitcher />
       </header>
       <main>
@@ -44,6 +48,7 @@ function AppShell() {
           <Route path="/new" element={<CreateRun />} />
           <Route path="/runs/:runId" element={<RunDetail />} />
           <Route path="/runs/:runId/report" element={<Report />} />
+          <Route path="/taxonomy" element={<Taxonomy />} />
         </Routes>
       </main>
     </div>
