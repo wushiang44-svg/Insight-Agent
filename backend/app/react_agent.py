@@ -937,7 +937,20 @@ def summarize(
 
     sentiment_breakdown = dict(Counter(item.sentiment.value for item in collected))
 
-    if llm.available():
+    # Phase 4, P0 (docs/phase4_merchant_decision_support_plan.md) -- real zero-evidence
+    # runs (run_89b02b9b1e3e, run_66b65bc32dc8) showed _summarize_llm() will confidently
+    # fabricate a full narrative from the model's own prior knowledge when handed empty
+    # pain_points/feature_requests/praised_aspects, rather than declining. Those are
+    # exactly the three inputs _summarize_llm() is given below, so when all three are
+    # empty there is nothing for it to ground a narrative in -- skip the LLM call
+    # entirely and fall through to the same deterministic _summarize_fallback() already
+    # used when no LLM is configured, which correctly reports "not enough evidence"
+    # instead of inventing one.
+    has_report_content = bool(
+        report_inputs.top_pain_points or report_inputs.feature_requests or report_inputs.praised_aspects
+    )
+
+    if has_report_content and llm.available():
         try:
             narrative = _summarize_llm(
                 product_category, collected, report_inputs.top_pain_points, report_inputs.feature_requests,
@@ -1002,13 +1015,47 @@ def _summarize_llm(
     praised: list[dict[str, Any]],
     llm: DeepSeekClient,
 ) -> dict[str, Any]:
+    # Phase 4, P1 (docs/phase4_merchant_decision_support_plan.md): rewritten after real
+    # reports showed this prompt let the model invent unsupported pricing/strategy advice
+    # (run_55025c50e81b: "reassess pricing strategy... mid-tier options") and fabricated
+    # false-precision specs never present in the input (run_55025c50e81b: "5200 mAh",
+    # "5-10 Hz"; run_89b02b9b1e3e: "under 55 dB", "2.5 hours"). Evidence-boundary,
+    # prohibited-content, grounding, and conservative-style rules below address those
+    # findings directly. Does NOT add an empty-input instruction -- P0 (the guard in
+    # summarize(), above) is the sole control-flow handler for that case; this prompt is
+    # only ever reached when there is at least one pain point, feature request, or
+    # praised aspect to ground a narrative in.
     system = (
-        "You are a senior product analyst preparing a report for a merchant, based on aggregated Reddit evidence "
-        "about their product category. Write concrete, specific, actionable recommendations the merchant can use "
-        "to improve the product, grounded in the aggregated pain points and feature requests. Also write a short "
-        "markdown summary (a few sections, no more than ~300 words). Write the full report TWICE, once in English "
-        "and once in Simplified Chinese — both genuinely composed in that language with matching content and "
-        "structure, not a translation note or placeholder. Return only JSON."
+        "You are a senior product analyst preparing a report for a merchant, based ONLY on the aggregated "
+        "Reddit evidence explicitly supplied to you below: the labels, counts, sentiment breakdowns, "
+        "confidence values, and example quotes in top_pain_points, feature_requests, and praised_aspects. "
+        "Do not use general knowledge about this product category, this company, competitors, or the "
+        "market. If a claim is not directly supported by the supplied data, do not make it.\n\n"
+        "Do not invent, estimate, or assume any of the following unless the exact figure or claim already "
+        "appears in the supplied data: return on investment or revenue impact; pricing strategy or price "
+        "changes; implementation, manufacturing, or unit cost; market or business strategy; product "
+        "positioning; a competitor's strategy or intentions; technical specifications; or any numeric "
+        "measurement, percentage, duration, capacity, frequency, threshold, or target value. This is a "
+        "general rule covering every unsupported number or claim, not only the categories just listed — "
+        "for example, writing '5200 mAh', '5-10 Hz', '80% in 30 minutes', 'under 55 dB', '2.5 hours', "
+        "'lower the price', or 'introduce a mid-tier model' is prohibited unless that exact figure or idea "
+        "is already present in the supplied pain points, feature requests, or praised aspects.\n\n"
+        "Every entry in recommended_actions_en/recommended_actions_zh must explicitly name the exact "
+        "aggregate label (the 'aspect' value) it addresses, taken verbatim from top_pain_points, "
+        "feature_requests, or praised_aspects below, so it can be matched back to that input entry. Never "
+        "invent a new label and never silently paraphrase a supplied label into wording that no longer "
+        "matches it.\n\n"
+        "Keep each recommendation short and conservative: state what the evidence suggests investigating "
+        "or prioritizing, do not claim certainty the evidence doesn't support, do not prescribe a specific "
+        "engineering solution unless that exact solution is already present in the supplied data, and do "
+        "not present business or product strategy as settled fact. Acceptable style: 'Consider "
+        "prioritizing improvements related to \"floor damage\" because it is one of the most frequently "
+        "supported pain points in this run.' Unacceptable style: 'Increase sensor frequency to 10 Hz and "
+        "reduce the price by 20%.'\n\n"
+        "Also write a short Markdown summary (a few sections, no more than ~300 words), grounded the same "
+        "way. Write the full report TWICE, once in English and once in Simplified Chinese — both genuinely "
+        "composed in that language with matching content and structure, not a translation note or "
+        "placeholder. Return only JSON."
     )
     user = json.dumps(
         {
@@ -1018,7 +1065,12 @@ def _summarize_llm(
             "feature_requests": feature_requests[:8],
             "praised_aspects": praised[:5],
             "expected_json": {
-                "recommended_actions_en": ["3 to 6 concrete, actionable product-improvement recommendations, in English"],
+                "recommended_actions_en": [
+                    "3 to 6 short, conservative recommendations in English; each must name the exact "
+                    "aggregate label (aspect) it addresses from top_pain_points/feature_requests/"
+                    "praised_aspects above, and must not invent pricing, cost, strategy, or specs not "
+                    "present in the supplied data"
+                ],
                 "recommended_actions_zh": ["the same 3 to 6 recommendations, written in Simplified Chinese"],
                 "summary_markdown_en": "a short Markdown-formatted summary report, in English",
                 "summary_markdown_zh": "the same summary report, written in Simplified Chinese",
