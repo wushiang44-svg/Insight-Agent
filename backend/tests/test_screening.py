@@ -330,6 +330,84 @@ def test_tangent_heavy_review_reaches_extract_claims_and_yields_the_buried_claim
 
 
 # ---------------------------------------------------------------------------
+# Milestone 1 / A1b: rebuttal & stance -- sentiment-only correction.
+#
+# Real traced example (run_55025c50e81b, ev_cc49804b000a, "robot vacuum
+# cleaners"): a comment disputing another commenter's floor-damage claim was
+# stored with sentiment=negative, which feeds directly into the report-wide
+# Product Health score / sentiment donut (react_agent.py's sentiment_breakdown
+# is computed from Evidence.sentiment unconditionally, on every report,
+# regardless of report_source). This section pins the sentiment-only
+# correction contract -- deliberately NOT touching insight_type selection,
+# per Milestone 1's scope fence.
+# ---------------------------------------------------------------------------
+
+REBUTTAL_DISPUTES_FLOOR_DAMAGE_BODY = (
+    "Is it possible you started paying attention to your floors now that they're getting "
+    "cleaned by a robot? Those look old like they were done by something with enough "
+    "weight to create dents and ridges..."
+)
+
+
+def test_rebuttal_gets_corrected_sentiment_not_negative() -> None:
+    item = make_item(body=REBUTTAL_DISPUTES_FLOOR_DAMAGE_BODY)
+    response = {
+        "categories": ["product_feedback"],
+        "insight_type": "pain_point",
+        "aspect": "floor_damage",
+        "sentiment": "neutral",
+        "quote": "Those look old like they were done by something with enough weight",
+        "confidence": 0.7,
+    }
+    result = screen_item("robot vacuum cleaners", item, FakeLLM(response=response))
+
+    assert result.sentiment != Sentiment.NEGATIVE
+
+
+def test_screening_insight_type_is_not_altered_by_the_sentiment_fix() -> None:
+    """Documents the accepted A1b scope boundary: this milestone corrects
+    `sentiment` only. screening.py's InsightType enum has no equivalent to
+    Claim's `observation` bucket, and adding one is explicitly out of scope
+    (see the Milestone 1 plan) -- a rebuttal can still legally come back as
+    `insight_type=pain_point`, and screen_item() must pass whatever
+    `insight_type` the model returns through unchanged, never silently
+    coerce it based on the sentiment correction."""
+    item = make_item(body=REBUTTAL_DISPUTES_FLOOR_DAMAGE_BODY)
+    response = {
+        "categories": ["product_feedback"],
+        "insight_type": "pain_point",
+        "aspect": "floor_damage",
+        "sentiment": "neutral",
+        "confidence": 0.7,
+    }
+    result = screen_item("robot vacuum cleaners", item, FakeLLM(response=response))
+
+    assert result.insight_type == InsightType.PAIN_POINT  # unchanged -- known, accepted limitation
+
+
+def test_hedged_firsthand_complaint_stays_negative_in_screening() -> None:
+    """False-positive guard: a genuine firsthand complaint phrased with a
+    hedge must not have its sentiment softened just because it superficially
+    resembles rebuttal-style wording."""
+    item = make_item(
+        body=(
+            "Unless you're way rougher on your floors than most people, you shouldn't see "
+            "this kind of damage -- but mine showed up after about two months of normal use."
+        )
+    )
+    response = {
+        "categories": ["product_feedback"],
+        "insight_type": "pain_point",
+        "aspect": "floor_damage",
+        "sentiment": "negative",
+        "confidence": 0.7,
+    }
+    result = screen_item("robot vacuum cleaners", item, FakeLLM(response=response))
+
+    assert result.sentiment == Sentiment.NEGATIVE
+
+
+# ---------------------------------------------------------------------------
 # Fallback path (no LLM)
 # ---------------------------------------------------------------------------
 

@@ -7,7 +7,7 @@ import pytest
 
 from app import routes as routes_module
 from app.llm import DeepSeekClient
-from app.models import Evidence, InsightType, Sentiment
+from app.models import ClaimType, Evidence, InsightType, Sentiment
 from app.pipeline.claims import ClaimExtractionStats, extract_claims
 from app.storage import Storage
 
@@ -729,6 +729,153 @@ def test_mixed_review_still_surfaces_the_product_claim() -> None:
     result = extract_claims("wireless earbuds", evidence, no_llm())
     aspects_found = {claim.aspect_raw for claim in result.claims}
     assert "battery" in aspects_found
+
+
+# ---------------------------------------------------------------------------
+# Milestone 1 / A1a: rebuttal & stance detection.
+#
+# Real traced example (run_55025c50e81b, "robot vacuum cleaners", the
+# "Robot Vacuum destroys wooden floor" thread): evidence ev_cc49804b000a is a
+# comment disputing another commenter's floor-damage claim ("Those look old
+# like they were done by something with enough weight to create dents and
+# ridges...") that was extracted as claim_type=problem/sentiment=negative --
+# directly inflating the exact pain point it was arguing against. The prompt
+# fix routes stance-disputing content to the existing, already-report-
+# excluded `observation` bucket (see test_report_generation.py's
+# test_question_observation_noise_claim_types_never_reach_the_report)
+# instead of inventing a new type/field.
+# ---------------------------------------------------------------------------
+
+REBUTTAL_DISPUTES_FLOOR_DAMAGE_BODY = (
+    "Is it possible you started paying attention to your floors now that they're getting "
+    "cleaned by a robot that catches your sight as if it were a pet? Those look old like "
+    "they were done by something with enough weight to create dents and ridges..."
+)
+
+REBUTTAL_OBSERVATION_RESPONSE = {
+    "claims": [
+        {
+            "claim_type": "observation",
+            "aspect_raw": "floor damage",
+            "statement": (
+                "The commenter disputes that the robot vacuum caused the floor damage, "
+                "suggesting it predates the robot."
+            ),
+            "sentiment": "neutral",
+        }
+    ]
+}
+
+
+def test_pure_rebuttal_extracts_as_observation_not_problem() -> None:
+    evidence = make_evidence(body=REBUTTAL_DISPUTES_FLOOR_DAMAGE_BODY)
+    result = extract_claims("robot vacuum cleaners", evidence, FakeLLM(response=REBUTTAL_OBSERVATION_RESPONSE))
+
+    assert len(result.claims) == 1
+    assert result.claims[0].claim_type == ClaimType.OBSERVATION
+    assert result.claims[0].sentiment != Sentiment.NEGATIVE
+
+
+HEDGED_FIRSTHAND_COMPLAINT_BODY = (
+    "Unless you're way rougher on your floors than most people, you shouldn't see this "
+    "kind of damage -- but mine showed up after about two months of normal use."
+)
+
+HEDGED_FIRSTHAND_COMPLAINT_RESPONSE = {
+    "claims": [
+        {
+            "claim_type": "problem",
+            "aspect_raw": "floor damage",
+            "statement": "The robot vacuum scratched the user's floor after about two months of normal use.",
+            "sentiment": "negative",
+        }
+    ]
+}
+
+
+def test_hedged_firsthand_complaint_still_extracts_as_problem() -> None:
+    """False-positive guard: skeptical/hedged PHRASING alone must not get
+    swept into `observation` -- this is a genuine firsthand complaint, not a
+    rebuttal of someone else's claim, and must stay `problem`/negative."""
+    evidence = make_evidence(body=HEDGED_FIRSTHAND_COMPLAINT_BODY)
+    result = extract_claims(
+        "robot vacuum cleaners", evidence, FakeLLM(response=HEDGED_FIRSTHAND_COMPLAINT_RESPONSE)
+    )
+
+    assert len(result.claims) == 1
+    assert result.claims[0].claim_type == ClaimType.PROBLEM
+    assert result.claims[0].sentiment == Sentiment.NEGATIVE
+
+
+REBUTTAL_PLUS_FIRSTHAND_RESPONSE = {
+    "claims": [
+        {
+            "claim_type": "observation",
+            "aspect_raw": "floor damage",
+            "statement": (
+                "The commenter disputes that the robot vacuum caused the deep dents, "
+                "attributing them to furniture instead."
+            ),
+            "sentiment": "neutral",
+        },
+        {
+            "claim_type": "problem",
+            "aspect_raw": "floor scratches",
+            "statement": "The robot vacuum left faint hairline scratches on laminate flooring after a few months.",
+            "sentiment": "negative",
+        },
+    ]
+}
+
+
+def test_rebuttal_and_separate_firsthand_complaint_both_extracted() -> None:
+    """A comment can both dispute someone else's claim AND separately report a
+    real, smaller firsthand issue -- both must survive as separate atomic
+    claims, not collapsed or dropped."""
+    evidence = make_evidence(
+        body=(
+            "That's not from the robot -- those dents look way too deep, probably furniture "
+            "being dragged. That said, mine did leave faint hairline scratches on my laminate "
+            "after a few months, which is a separate, smaller issue."
+        )
+    )
+    result = extract_claims("robot vacuum cleaners", evidence, FakeLLM(response=REBUTTAL_PLUS_FIRSTHAND_RESPONSE))
+
+    types = {c.claim_type for c in result.claims}
+    assert types == {ClaimType.OBSERVATION, ClaimType.PROBLEM}
+
+
+SAME_ASPECT_OBSERVATION_AND_PROBLEM_RESPONSE = {
+    "claims": [
+        {
+            "claim_type": "observation",
+            "aspect_raw": "floor damage",
+            "statement": "The commenter disputes that the robot vacuum caused the floor damage.",
+            "sentiment": "neutral",
+        },
+        {
+            "claim_type": "problem",
+            "aspect_raw": "floor damage",
+            "statement": "The robot vacuum damaged the user's floor.",
+            "sentiment": "negative",
+        },
+    ]
+}
+
+
+def test_observation_never_merges_with_same_aspect_problem_claim() -> None:
+    """Load-bearing assumption of A1a: _pair_decision() already returns "skip"
+    for any pair whose claim_type differs (checked before same-aspect lexical
+    similarity even runs), so an `observation`-classified rebuttal can never
+    silently merge into a `problem` claim sharing the same aspect -- confirmed
+    here rather than just assumed."""
+    evidence = make_evidence(body="mixed rebuttal and complaint about floor damage, same aspect")
+    llm = FakeLLM(response=SAME_ASPECT_OBSERVATION_AND_PROBLEM_RESPONSE)
+    result = extract_claims("robot vacuum cleaners", evidence, llm)
+
+    assert len(result.claims) == 2
+    assert llm.calls == 1  # type mismatch short-circuits to "skip" -- no merge-verification call spent
+    assert result.stats.claims_merged == 0
 
 
 # ---------------------------------------------------------------------------
