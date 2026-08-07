@@ -6,7 +6,7 @@ import type { AppConfig, DataSource } from "../api";
 import { useLanguage } from "../lib/i18n";
 import { useSourceMeta } from "../lib/sources";
 
-const SOURCE_OPTIONS: DataSource[] = ["reddit", "amazon", "youtube", "json_upload"];
+const SOURCE_OPTIONS: DataSource[] = ["reddit", "amazon", "json_upload", "youtube"];
 
 function parseList(value: string): string[] {
   return value

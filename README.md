@@ -1,11 +1,14 @@
 # VOC Insight Agent
 
 Given a product category (e.g. "wireless earbuds"), the agent mines real customer feedback ("Voice of
-Customer") from a pluggable data source — Reddit, Amazon reviews, YouTube comments, or a JSON upload —
-into a merchant-readable report: what customers care about, what's most important, and a short list of
-evidence-backed suggestions. It is deliberately **not** an AI business consultant: recommendations stay
-short, conservative, and traceable back to a specific aggregate of collected feedback — never invented
+Customer") into a merchant-readable report: what customers care about, what's most important, and a short
+list of evidence-backed suggestions. It is deliberately **not** an AI business consultant: recommendations
+stay short, conservative, and traceable back to a specific aggregate of collected feedback — never invented
 pricing, ROI, cost, or market strategy the data can't support (see "Report reliability" below).
+
+**Data sources in v1.x:** Reddit and Amazon reviews are the production-supported sources. A local JSON
+upload is available as an additional input method for offline/custom data. YouTube is implemented and
+available for evaluation, but is Experimental — not yet production-supported (see "Data sources" below).
 
 ## Pipeline
 
@@ -78,7 +81,10 @@ app/collectors/
   _agent_browser.py   Shared subprocess wrapper around the `agent-browser` CLI, used by amazon.py/youtube.py
 ```
 
-Four sources are offered for new runs today:
+Four options are offered for new runs today — two production data sources, one additional input method,
+and one experimental data source:
+
+**Production sources:**
 
 - **Reddit** (`app/collectors/reddit_browser.py`, `DataSource.REDDIT`): the primary Reddit source. Drives
   a plain, independently-launched Chrome instance that the collector attaches to over the Chrome DevTools
@@ -92,20 +98,31 @@ Four sources are offered for new runs today:
   see a truncated AI summary, not individual reviews. Reviews are fetched by sweeping all five star-rating
   filter pages per product and merging them round-robin, since Amazon's own "load more" pagination
   reliably fails under automation.
-- **YouTube Comments** (`app/collectors/youtube.py`): also browser automation via agent-browser, but no
-  login needed since comments are public. Searches videos, then scrolls each one's comment section to
-  trigger lazy-loading.
+
+**Additional input method:**
+
 - **JSON upload** (`app/collectors/json_upload.py`): feeds a pre-prepared JSON array of posts/comments to
   the agent. Requires no credentials or browser automation at all — good for demos, offline analysis, or
-  exercising the full pipeline without any of the above set up.
+  exercising the full pipeline without any live source configured. Not a live scraped source, so it sits
+  alongside Reddit/Amazon as an input method rather than as a third production data source.
+
+**Experimental:**
+
+- **YouTube** (`app/collectors/youtube.py`): browser automation via agent-browser, no login needed since
+  comments are public. Searches videos, then scrolls each one's comment section to trigger lazy-loading.
+  Implemented and available for evaluation, but not yet production-supported in v1.x — it has no validated
+  end-to-end live run and no automated regression coverage yet, unlike Reddit and Amazon. See
+  `EVALUATION_CONTEXT.md`'s Known Gaps for the full status.
 
 Two older Reddit collectors (`reddit.py`, PRAW-based; `scraper.py`, unofficial HTTP scraping) still exist
 and are still registered, purely so runs created before `reddit_browser.py` existed keep resolving to their
 original collector — they are no longer offered as a data-source choice for new runs.
 
 Pick the data source when creating a run in the frontend; all four share the exact same downstream
-screening/claim-extraction/categorization/report logic. Customer review/comment text is never rewritten or
-translated by the pipeline — it's evidence, and every quote in the report links back to its source.
+screening/claim-extraction/categorization/report logic — YouTube's Experimental status is a product-scope
+decision about where it's recommended for real use, not a difference in how the pipeline treats it. Customer
+review/comment text is never rewritten or translated by the pipeline — it's evidence, and every quote in the
+report links back to its source.
 
 ### Claims taxonomy & curation
 
@@ -169,7 +186,7 @@ page), then close the window — this only needs to happen once per profile. Poi
 `REDDIT_CHROME_PROFILE_DIR` at that same path in `.env` (`REDDIT_CHROME_EXECUTABLE`/`REDDIT_CHROME_CDP_PORT`
 only need to be set if you're not using Chrome's default install location or port 9222).
 
-### 3. Amazon / YouTube collectors (optional — not needed if you only use Reddit/JSON upload)
+### 3. Amazon collector, and the Experimental YouTube collector (optional — not needed if you only use Reddit/JSON upload)
 
 Both drive a real Chrome session via the [agent-browser](https://github.com/vercel-labs/agent-browser) CLI:
 
@@ -178,8 +195,8 @@ npm install -g agent-browser
 agent-browser install   # downloads a Chrome for Testing runtime, first time only
 ```
 
-YouTube needs nothing else — comments are public. Amazon needs a one-time manual login into a persistent
-profile before it can read full reviews:
+YouTube (Experimental — see "Data sources" above) needs nothing else, since comments are public. Amazon
+needs a one-time manual login into a persistent profile before it can read full reviews:
 
 ```bash
 agent-browser --profile "<path-to-a-profile-dir>" open https://www.amazon.com --headed
@@ -235,9 +252,10 @@ Open `http://localhost:5173`.
      the page falls back to JSON upload by default and shows a warning if you select Reddit anyway.
    - **Amazon Reviews**: requires `agent-browser` installed and a one-time login (see Setup). If either is
      missing, the page shows a warning.
-   - **YouTube Comments**: requires `agent-browser` installed; no login needed.
-   - **JSON upload**: upload a JSON array of posts/comments (a format example is shown on the page). No
-     credentials required.
+   - **JSON Upload (Input Method)**: upload a JSON array of posts/comments (a format example is shown on
+     the page). No credentials required.
+   - **YouTube (Experimental)**: requires `agent-browser` installed; no login needed. Implemented and
+     available for evaluation, but not yet a production-supported source in v1.x — see "Data sources" above.
 3. After submitting, you land on the run detail page, which polls the backend every 2 seconds and shows
    the agent's thought / search / screening / claim-extraction / sufficiency-check steps live.
 4. Once the status becomes "Completed", click "View merchant report" to see pain points, feature requests,
@@ -261,12 +279,14 @@ Open `http://localhost:5173`.
 - Without a configured DeepSeek key, planning / screening / claim extraction / categorization /
   sufficiency-checking / summarizing all fall back to deterministic keyword rules — useful for local
   development and testing, but report quality is nowhere near as good as with a real LLM.
-- Amazon/YouTube collectors drive a real browser, so they're inherently slower than an API and depend on
-  the target site's current page structure and anti-automation behavior — both have been observed to
-  throttle or block a session that navigates too aggressively (Amazon's own "load more" pagination, and
+- Amazon and YouTube collectors both drive a real browser, so they're inherently slower than an API and
+  depend on the target site's current page structure and anti-automation behavior — both have been observed
+  to throttle or block a session that navigates too aggressively (Amazon's own "load more" pagination, and
   YouTube's comment lazy-load, have both failed under heavy back-to-back automated use in testing). If a
   run comes back with far less evidence than expected, this is the first thing to suspect; pace requests
-  and retry later rather than assuming the collector code is broken.
+  and retry later rather than assuming the collector code is broken. Amazon has real, repeatedly-validated
+  production runs despite this caveat; YouTube does not yet, which (along with having no automated
+  regression coverage) is why it's Experimental rather than production-supported in v1.x.
 - A run's report only uses the categorized-Claims path once categorization has run and resolved a
   sufficient share of that run's claims; otherwise it automatically falls back to grouping by raw evidence
   aspect instead, and the report records which path was used and why.

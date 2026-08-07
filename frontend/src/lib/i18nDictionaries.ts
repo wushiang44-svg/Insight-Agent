@@ -30,8 +30,8 @@ export const en: Dict = {
   "create.source.reddit_api": "Reddit API (live search)",
   "create.source.reddit_scraper": "Reddit scraper (no API key, unofficial)",
   "create.source.amazon": "Amazon Reviews (browser automation, requires one-time login)",
-  "create.source.youtube": "YouTube Comments (browser automation, no login needed)",
-  "create.source.json_upload": "JSON upload (offline / demo data)",
+  "create.source.json_upload": "JSON Upload (Input Method)",
+  "create.source.youtube": "YouTube (Experimental)",
   "create.redditWarning":
     "Reddit browser collector isn't set up yet on this backend — it needs Chrome installed and a one-time manual profile initialization (open reddit.com once in a dedicated Chrome window, then close it). See the RedditBrowserCollector docstring for the exact command. Consider \"JSON upload\" to try the full flow with prepared sample data in the meantime.",
   "create.redditChallengedWarning":
@@ -49,7 +49,7 @@ export const en: Dict = {
   "create.note.amazon":
     "Drives a real, logged-in Chrome session per run — slower than an API (product search plus a 5-star-rating sweep per product), and needs a one-time manual login into a persistent agent-browser profile before it will return anything.",
   "create.note.youtube":
-    "Drives a real Chrome session per run to search videos and scroll their comment sections — no login needed, but slower than an API and dependent on YouTube's comment lazy-loading behaving.",
+    "Available for evaluation and future development. Reddit and Amazon are the production-supported sources in VOC Insight Agent v1.x.",
   "create.upload.label": "Upload a JSON file (array of Reddit posts/comments)",
   "create.upload.selected": "Selected {name}, {count} item(s).",
   "create.upload.viewExample": "View JSON format example",
@@ -164,9 +164,9 @@ export const en: Dict = {
   "source.reddit.label": "Reddit",
   "source.reddit_api.label": "Reddit API",
   "source.reddit_scraper.label": "Reddit Scraper (unofficial)",
-  "source.json_upload.label": "JSON Upload",
+  "source.json_upload.label": "JSON Upload (Input Method)",
   "source.amazon.label": "Amazon Reviews",
-  "source.youtube.label": "YouTube Comments",
+  "source.youtube.label": "YouTube (Experimental)",
   "source.group.subreddit": "Subreddits",
   "source.group.subreddit.singular": "subreddit",
   "source.group.product": "Products",
@@ -333,8 +333,8 @@ export const zh: Dict = {
   "create.source.reddit_api": "Reddit API(实时搜索)",
   "create.source.reddit_scraper": "Reddit 爬虫(无需 API key,非官方)",
   "create.source.amazon": "Amazon 评论(浏览器自动化,需要一次性登录)",
-  "create.source.youtube": "YouTube 评论(浏览器自动化,无需登录)",
-  "create.source.json_upload": "JSON 上传(离线 / 演示数据)",
+  "create.source.json_upload": "JSON 上传（输入方式）",
+  "create.source.youtube": "YouTube（实验性）",
   "create.redditWarning":
     "这个后端上 Reddit 浏览器采集器还没配置好——需要安装 Chrome,并完成一次性的手动 profile 初始化(在一个专用 Chrome 窗口里打开一次 reddit.com,再关闭窗口)。具体命令请参考 RedditBrowserCollector 的文档注释。也可以先选择「JSON 上传」用准备好的样本数据体验完整流程。",
   "create.redditChallengedWarning":
@@ -351,7 +351,7 @@ export const zh: Dict = {
   "create.note.amazon":
     "每次任务都会启动一个真实的、已登录的 Chrome 会话——比 API 慢(每个商品要搜索加上 5 个星级筛选各抓一次),而且需要提前在一个持久化的 agent-browser profile 里手动登录一次,否则拿不到任何数据。",
   "create.note.youtube":
-    "每次任务都会启动一个真实 Chrome 会话去搜索视频并滚动加载评论区——不需要登录,但比 API 慢,而且依赖 YouTube 评论懒加载机制正常工作。",
+    "当前保留用于评估与后续开发。VOC Insight Agent v1.x 正式支持 Reddit 与 Amazon。",
   "create.upload.label": "上传一个 JSON 文件(Reddit 帖子/评论数组)",
   "create.upload.selected": "已选择 {name},共 {count} 条。",
   "create.upload.viewExample": "查看 JSON 格式示例",
@@ -466,9 +466,9 @@ export const zh: Dict = {
   "source.reddit.label": "Reddit",
   "source.reddit_api.label": "Reddit API",
   "source.reddit_scraper.label": "Reddit 爬虫(非官方)",
-  "source.json_upload.label": "JSON 上传",
+  "source.json_upload.label": "JSON 上传（输入方式）",
   "source.amazon.label": "Amazon 评论",
-  "source.youtube.label": "YouTube 评论",
+  "source.youtube.label": "YouTube（实验性）",
   "source.group.subreddit": "Subreddit",
   "source.group.subreddit.singular": "subreddit",
   "source.group.product": "商品",

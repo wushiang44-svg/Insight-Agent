@@ -4,7 +4,9 @@ This document briefs an evaluator (human or agent) who has no prior context on t
 
 ## One-line description
 
-Given a product category (e.g. "wireless earbuds"), the agent runs a ReAct loop against a pluggable data source (Reddit / Amazon / YouTube / a local JSON upload) to mine scattered user feedback into a structured, merchant-readable report — pain points, feature requests, competitor mentions, praise, sentiment breakdown, priority ranking, and a recommended-fixes roadmap. The report is generated bilingually (English + Simplified Chinese) in the same LLM call.
+Given a product category (e.g. "wireless earbuds"), the agent runs a ReAct loop against a pluggable data source to mine scattered user feedback into a structured, merchant-readable report — pain points, feature requests, competitor mentions, praise, sentiment breakdown, priority ranking, and a recommended-fixes roadmap. The report is generated bilingually (English + Simplified Chinese) in the same LLM call.
+
+**Product scope (v1.x):** Reddit and Amazon are the production-supported data sources. A local JSON upload is an additional input method (offline/custom data, not a live scraped source). YouTube is implemented and registered exactly like the other collectors, but is Experimental — deliberately deferred from production scope as of Milestone 5 (see Known Gap 2) rather than removed; it can return to production status later without any architectural change.
 
 ## High-level architecture
 
@@ -30,7 +32,7 @@ Given a product category (e.g. "wireless earbuds"), the agent runs a ReAct loop 
                         | Collector         |     | DeepSeekClient    |
                         | (pluggable):       |     | (LLM, with a      |
                         | Reddit/Amazon/     |     | rule-based        |
-                        | YouTube/JSON       |     | fallback)          |
+                        | JSON/YouTube*      |     | fallback)          |
                         +-------------------+     +-------------------+
                                   |
                         +---------v--------+
@@ -40,6 +42,9 @@ Given a product category (e.g. "wireless earbuds"), the agent runs a ReAct loop 
                         | reports          |
                         +------------------+
 ```
+
+\* YouTube is Experimental in v1.x — implemented and registered like any other collector, available for
+evaluation, but not yet production-supported. See the source table and Known Gap 2 below.
 
 ## End-to-end flow
 
@@ -56,15 +61,20 @@ Given a product category (e.g. "wireless earbuds"), the agent runs a ReAct loop 
 
 4. **Frontend polling** (`RunDetail.tsx`, every 2s): live-renders each round's Thought/Search/Results/Filtering/Decision. On completion, links to the report page (`Report.tsx`) — KPI cards, a sentiment donut, a priority-ranked list (a heuristic scoring formula, not a statistically rigorous ranking — it's meant to answer "what to fix first," not to be audited), evidence grouped by aspect with linked quotes, and a fix/build roadmap.
 
-## The pluggable data-source layer (5 sources today)
+## The pluggable data-source layer
 
-| Source | Mechanism | Credentials/login | Known limitations |
-|---|---|---|---|
-| `reddit_api` | PRAW, read-only OAuth | Requires Reddit Data API approval (pending, unresolved as of this writing) | Not currently usable in practice |
-| `reddit_scraper` | Direct HTTP to Reddit's public `.json` endpoints | None | Unofficial; more aggressive rate limiting/blocking than the real API |
-| `json_upload` | Reads a user-uploaded JSON array | None | Offline/demo only, not live data |
-| `amazon` | Drives a real, logged-in Chrome session via the `agent-browser` CLI; sweeps all 5 star-rating filter pages per product and round-robin merges them | One-time manual login into a persistent browser profile | Effective yield capped at roughly 30-50 reviews/product after dedup; a "Verified Purchase" signal is captured but has never actually been exercised against a real unverified review in testing |
-| `youtube` | `agent-browser` searches videos, then scrolls each one's comment section to trigger lazy-loading | None (comments are public) | **As of the last test, comment loading was actively throttled/broken** on the test machine after heavy automated use — the extraction logic itself was validated against real loaded data earlier, but a full end-to-end run was never successfully completed since |
+Four options are offered when creating a new run — Reddit, Amazon, JSON Upload, YouTube (in that
+presentation order, see the Status column below); `reddit_api`/`reddit_scraper` are legacy, kept only so
+runs created before `reddit_browser.py` existed keep resolving to their original collector.
+
+| Source | Status | Mechanism | Credentials/login | Known limitations |
+|---|---|---|---|---|
+| `reddit` | **Production** | `reddit_browser.py` — a dedicated Chrome instance attached over CDP, warmed up by one manual human visit | No Reddit login required (persisted browsing trust, not credentials) | Subject to Reddit's bot detection; a profile can enter a "challenged" state (tracked via `reddit_profile_status`), usually temporary |
+| `reddit_api` | Legacy (kept for old runs only) | PRAW, read-only OAuth | Requires Reddit Data API approval (pending, unresolved as of this writing) | Not currently usable in practice |
+| `reddit_scraper` | Legacy (kept for old runs only) | Direct HTTP to Reddit's public `.json` endpoints | None | Unofficial; more aggressive rate limiting/blocking than the real API |
+| `amazon` | **Production** | Drives a real, logged-in Chrome session via the `agent-browser` CLI; sweeps all 5 star-rating filter pages per product and round-robin merges them | One-time manual login into a persistent browser profile | Effective yield capped at roughly 30-50 reviews/product after dedup; a "Verified Purchase" signal is captured but has never actually been exercised against a real unverified review in testing |
+| `json_upload` | Additional input method | Reads a user-uploaded JSON array | None | Offline/custom data only, not a live scraped source — this is why it's positioned alongside Reddit/Amazon as an input method rather than as a third production data source |
+| `youtube` | Experimental | `agent-browser` searches videos, then scrolls each one's comment section to trigger lazy-loading | None (comments are public) | Implemented and registered like any other collector, but has zero validated end-to-end live runs and no automated regression coverage as of Milestone 5 — a deliberate v1.x scope decision (see Known Gap 2), not a proven defect. Prior informal observation: comment loading appeared throttled/broken on the test machine after heavy automated use; the extraction logic itself was validated against real captured data earlier |
 
 Amazon and YouTube share low-level browser-automation plumbing in `collectors/_agent_browser.py`, which works around several Windows-specific `subprocess`/Chrome-automation pitfalls (a `.cmd` shim that can't run without `shell=True`; a background daemon that inherits pipe handles and hangs `subprocess.run` past its own timeout; transient `WinError 32` file-sharing violations; GBK-vs-UTF-8 console decoding). Each collector instance is pinned to an `agent-browser` `--session` keyed by `run_id`, because concurrent runs sharing the default session would silently read each other's browser tab.
 
@@ -87,10 +97,10 @@ Customer review/comment quotes are never translated or reworded anywhere in the 
 
 ## Known gaps (worth an evaluator's attention)
 
-1. ~~**The search-planner prompt is still Reddit-specific.**~~ **Fixed (Milestone 4 / D2).** `plan_next_query`/`_plan_next_query_llm` and `check_sufficiency`/`_check_sufficiency_llm` now build their prompts from a small, centralized `SourceProfile` table (`backend/app/pipeline/source_profiles.py`) keyed by `DataSource`, instead of a hardcoded Reddit-framed string. Amazon/YouTube prompts never request or invent a subreddit/group filter; JSON-upload prompts offer a category filter only when the run actually supplied target groups, and never invent one otherwise. Reddit's own behavior (subreddit narrowing, prompt instructions) is unchanged. Query-quality *tuning* for non-Reddit sources beyond removing the Reddit-specific mismatch remains unvalidated against live traffic — see gap 2 below for the YouTube collector's separate, still-open reliability gap.
-2. **The YouTube collector's end-to-end path is unverified as of the last session** (see table above) — the extraction code is correct against real data captured earlier, but no complete real run has confirmed it since the throttling was observed.
+1. ~~**The search-planner prompt is still Reddit-specific.**~~ **Fixed (Milestone 4 / D2).** `plan_next_query`/`_plan_next_query_llm` and `check_sufficiency`/`_check_sufficiency_llm` now build their prompts from a small, centralized `SourceProfile` table (`backend/app/pipeline/source_profiles.py`) keyed by `DataSource`, instead of a hardcoded Reddit-framed string. Amazon/YouTube prompts never request or invent a subreddit/group filter; JSON-upload prompts offer a category filter only when the run actually supplied target groups, and never invent one otherwise. Reddit's own behavior (subreddit narrowing, prompt instructions) is unchanged. Query-quality *tuning* for non-Reddit sources beyond removing the Reddit-specific mismatch remains unvalidated against live traffic — see gap 2 below for YouTube's separate, still-Experimental status in v1.x.
+2. **YouTube is Experimental in v1.x, not production-supported — a deliberate product-scope decision (Milestone 5), not an open bug to fix.** The collector is fully implemented and registered exactly like Reddit/Amazon, and its planner prompts are source-aware (Milestone 4). What's still missing is proof, not code: zero validated end-to-end live runs (confirmed via the dev database: 0 rows for `data_source='youtube'`, versus 12 real Amazon runs / 693 evidence items) and no automated regression coverage exist for it. The only historical signal is an informal, unreproduced observation that comment loading appeared throttled/broken on the test machine after heavy automated use — the extraction logic itself was previously validated against real captured data. Re-promoting YouTube to production later requires re-running that verification and adding test coverage, not an architectural change.
 3. **The Amazon "Verified Purchase" authenticity signal has only ever seen positive cases** in testing — never a genuine unverified review — so its practical value as a fake-review filter is unproven, not just untuned.
-4. **Amazon/YouTube collection is slow and not fully predictable**, being real-browser-driven and deliberately rate-limited; unlike an API, throughput and reliability depend on the target site's current anti-automation posture, which has visibly changed mid-session during development.
+4. **Amazon's browser-driven collection is slow and not fully predictable** — unlike an API, throughput and reliability depend on the target site's current anti-automation posture, which has visibly changed mid-session during development. (YouTube shares the same underlying `agent-browser` mechanism and the same category of risk, but is tracked separately under gap 2 above since it additionally lacks any validated production run.)
 5. **The `subreddit` field name throughout `CollectedItem`/`Evidence`/the database schema is a historical artifact** — functionally a generic grouping label now, but the name itself is misleading to anyone reading the schema cold.
 6. The GitHub repository is still named `Insight-Agent` (the local project and its documentation were renamed to "VOC Insight Agent"; the GitHub rename is a manual step not yet done).
 
