@@ -108,6 +108,16 @@ export function CreateRun() {
 
   const showRedditWarning = dataSource === "reddit" && config !== null && !config.reddit_browser_configured;
 
+  // Milestone 2 / B1: a configured-but-unhealthy profile is a distinct state
+  // from "not configured at all" -- proactive, informational (not blocking,
+  // per the prior challenge investigation's own finding that a later run on
+  // the same profile can succeed) warning shown before the run even starts,
+  // rather than only discovering it after a run comes back with 0 evidence.
+  const showRedditChallengedWarning =
+    dataSource === "reddit" && config !== null && config.reddit_browser_configured && config.reddit_profile_status === "challenged";
+  const showRedditStaleWarning =
+    dataSource === "reddit" && config !== null && config.reddit_browser_configured && config.reddit_profile_status === "unknown";
+
   const selectedMeta = useSourceMeta(dataSource);
   // Reddit's "not configured" case has its own, more detailed message above (one-time
   // setup, alternatives) — this generic one covers amazon/youtube instead.
@@ -150,6 +160,12 @@ export function CreateRun() {
         </div>
 
         {showRedditWarning && <p className="error">{t("create.redditWarning")}</p>}
+        {showRedditChallengedWarning && (
+          <p className="error">
+            {t("create.redditChallengedWarning", { count: config?.reddit_consecutive_challenge_count ?? 0 })}
+          </p>
+        )}
+        {showRedditStaleWarning && <p className="muted">{t("create.redditStaleWarning")}</p>}
 
         {showSourceWarning && (
           <p className="error">{t("create.sourceWarning", { source: selectedMeta.label, hint: notConfiguredHint })}</p>

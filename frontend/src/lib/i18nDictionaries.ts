@@ -34,6 +34,10 @@ export const en: Dict = {
   "create.source.json_upload": "JSON upload (offline / demo data)",
   "create.redditWarning":
     "Reddit browser collector isn't set up yet on this backend — it needs Chrome installed and a one-time manual profile initialization (open reddit.com once in a dedicated Chrome window, then close it). See the RedditBrowserCollector docstring for the exact command. Consider \"JSON upload\" to try the full flow with prepared sample data in the meantime.",
+  "create.redditChallengedWarning":
+    "The Reddit profile is configured, but its last attempt was blocked by Reddit's bot detection ({count} in a row so far). This is usually temporary and self-resolves — you can still start a run, but if it comes back with no evidence, that's likely why.",
+  "create.redditStaleWarning":
+    "The Reddit profile is configured but hasn't completed a successful search yet — this is expected right after the one-time setup, before its first real search.",
   "create.sourceWarning":
     "{source} isn't set up on this backend yet ({hint}). Pick another data source, or ask whoever runs this backend to finish setup.",
   "create.hint.amazon": "no agent-browser login found for Amazon — see the AmazonCollector docstring for the one-time login command",
@@ -143,6 +147,10 @@ export const en: Dict = {
   "report.fallback.low_resolved_coverage": "Resolved category coverage was {percent}%.",
   "report.fallback.unknown": "The Claims-based report was not used for this run.",
   "report.details.snapshotNote": "Category statuses reflect the taxonomy state when this report was generated.",
+  "report.reddit.challengeBannerTitle": "Reddit blocked this run",
+  "report.reddit.challengeBannerBody":
+    "The Reddit collector hit a bot-detection challenge and couldn't collect anything this run — this is different from \"no discussion found for this topic.\" This is usually temporary: try running again shortly, or re-warm the Chrome profile if it keeps happening (see the Reddit setup note on the New Run page).",
+  "report.reddit.challengeNoteQuiet": "Reddit was blocked on {n} iteration(s) during this run, though enough evidence still came through.",
 
   "severity.critical": "Critical",
   "severity.high": "High",
@@ -329,6 +337,10 @@ export const zh: Dict = {
   "create.source.json_upload": "JSON 上传(离线 / 演示数据)",
   "create.redditWarning":
     "这个后端上 Reddit 浏览器采集器还没配置好——需要安装 Chrome,并完成一次性的手动 profile 初始化(在一个专用 Chrome 窗口里打开一次 reddit.com,再关闭窗口)。具体命令请参考 RedditBrowserCollector 的文档注释。也可以先选择「JSON 上传」用准备好的样本数据体验完整流程。",
+  "create.redditChallengedWarning":
+    "Reddit profile 已经配置好了,但上一次尝试被 Reddit 的机器人检测拦截了(目前连续 {count} 次)。这通常是暂时性的,会自己恢复——仍然可以开始任务,但如果这次跑出来没有证据,很可能就是这个原因。",
+  "create.redditStaleWarning":
+    "Reddit profile 已经配置好了,但还没有完成过一次成功的搜索——刚做完一次性初始化、还没跑过第一次真实搜索时,这是正常现象。",
   "create.sourceWarning": "{source} 在这个后端上还没配置好({hint})。请换一个数据来源,或者联系维护这个后端的人完成配置。",
   "create.hint.amazon": "没有找到 Amazon 的 agent-browser 登录状态——一次性登录命令请参考 AmazonCollector 的文档注释",
   "create.hint.notInstalled": "没有安装 agent-browser",
@@ -437,6 +449,10 @@ export const zh: Dict = {
   "report.fallback.low_resolved_coverage": "已归类覆盖率为 {percent}%。",
   "report.fallback.unknown": "本次任务未使用基于声明的报告。",
   "report.details.snapshotNote": "分类状态反映的是本报告生成时的分类体系状态。",
+  "report.reddit.challengeBannerTitle": "Reddit 拦截了本次任务",
+  "report.reddit.challengeBannerBody":
+    "Reddit 采集器遇到了机器人检测挑战,本次任务未能采集到任何内容——这和「该主题没有相关讨论」是两回事。这通常是暂时性的:可以稍后重试,如果反复出现,可以重新「预热」一下 Chrome profile(具体步骤见「新建任务」页面的 Reddit 设置说明)。",
+  "report.reddit.challengeNoteQuiet": "本次任务中有 {n} 轮迭代被 Reddit 拦截,但仍收集到了足够的证据。",
 
   "severity.critical": "紧急",
   "severity.high": "高",

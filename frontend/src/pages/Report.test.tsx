@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { Report } from "./Report";
 import { LanguageProvider } from "../lib/i18n";
 import { mockFetchWith } from "../test/mockFetch";
-import type { AspectGroup, Report as ReportData, RunRecord } from "../api";
+import type { AspectGroup, Report as ReportData, RunRecord, TraceEvent } from "../api";
 
 function makeAspectGroup(overrides: Partial<AspectGroup> = {}): AspectGroup {
   return {
@@ -58,10 +58,21 @@ function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
   };
 }
 
-async function renderReport(report: ReportData, run: RunRecord = makeRun()) {
+function makeChallengeEvent(iteration: number, payload: Record<string, unknown>): TraceEvent {
+  return {
+    run_id: "run_1",
+    iteration,
+    step_type: "action_search",
+    message: "Searched",
+    payload,
+    created_at: "2026-01-01T00:00:00+00:00",
+  };
+}
+
+async function renderReport(report: ReportData, run: RunRecord = makeRun(), traceEvents: TraceEvent[] = []) {
   mockFetchWith((url) => {
     if (url.includes("/report")) return { body: report };
-    if (url.includes("/runs/run_1")) return { body: { run, trace_events: [], is_running: false } };
+    if (url.includes("/runs/run_1")) return { body: { run, trace_events: traceEvents, is_running: false } };
     return undefined;
   });
 
@@ -221,5 +232,46 @@ describe("Report -- old payloads render successfully", () => {
     expect(screen.getAllByText("Battery Life").length).toBeGreaterThan(0);
     expect(container.textContent).toContain("Legacy evidence report");
     expect(screen.queryByText("Shipping Issues")).toBeNull();
+  });
+});
+
+describe("Report -- Reddit challenge diagnostics (Milestone 2 / B3, Option A)", () => {
+  it("shows the prominent challenge banner when evidence is zero and a challenge was recorded", async () => {
+    const { container } = await renderReport(
+      makeReport({ sentiment_breakdown: {} }),
+      makeRun({ data_source: "reddit" }),
+      [makeChallengeEvent(1, { challenge_detected: true, challenge_reason: "js_challenge_url" })],
+    );
+    expect(container.textContent).toContain("Reddit blocked this run");
+  });
+
+  it("does not show the banner when a challenge occurred but evidence is still healthy -- shows the quiet note instead", async () => {
+    const { container } = await renderReport(
+      makeReport({ sentiment_breakdown: { positive: 3, neutral: 2, negative: 1 } }),
+      makeRun({ data_source: "reddit" }),
+      [makeChallengeEvent(1, { challenge_detected: true, challenge_reason: "block_phrase" })],
+    );
+    expect(container.textContent).not.toContain("Reddit blocked this run");
+    expect(container.textContent).toContain("Reddit was blocked on 1 iteration(s)");
+  });
+
+  it("shows neither message when no challenge was ever recorded, even with zero evidence", async () => {
+    const { container } = await renderReport(makeReport({ sentiment_breakdown: {} }), makeRun({ data_source: "reddit" }), []);
+    expect(container.textContent).not.toContain("Reddit blocked this run");
+    expect(container.textContent).not.toContain("iteration(s)");
+  });
+
+  it("never shows Reddit-specific messaging for a non-Reddit data source", async () => {
+    const { container } = await renderReport(
+      makeReport({ sentiment_breakdown: {} }),
+      makeRun({ data_source: "amazon" }),
+      [makeChallengeEvent(1, { challenge_detected: true, challenge_reason: "js_challenge_url" })],
+    );
+    expect(container.textContent).not.toContain("Reddit blocked this run");
+  });
+
+  it("does not crash and shows nothing extra for older payloads with no trace_events at all", async () => {
+    const { container } = await renderReport(makeReport(), makeRun({ data_source: "reddit" }), []);
+    expect(container.textContent).not.toContain("Reddit blocked this run");
   });
 });

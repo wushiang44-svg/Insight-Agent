@@ -138,15 +138,21 @@ def _cdp_probe(cdp_port: int, timeout: float = 2.0) -> dict[str, Any] | None:
     return None
 
 
-def ensure_running(profile_dir: Path, cdp_port: int) -> ProcessIdentity:
+def ensure_running(profile_dir: Path, cdp_port: int) -> tuple[ProcessIdentity, bool]:
     """Reuses an already-running dedicated instance if one exists and its CDP
     endpoint is live; otherwise launches a fresh, deliberately plain Chrome
     process (no --headless, no automation-marker flags) and waits for CDP
     readiness. Never launches via agent-browser's own open()/--profile path
-    -- that's the path proven to trigger Reddit's challenge."""
+    -- that's the path proven to trigger Reddit's challenge.
+
+    Returns (identity, reused): reused=True means an already-running
+    instance was attached to; False means this call just launched a fresh
+    process. `reused` is call-specific (a fact about what THIS call did), not
+    a property of the process itself, so it's returned alongside
+    ProcessIdentity rather than added as a field on it."""
     existing = find_dedicated_instance(profile_dir, cdp_port)
     if existing is not None and _cdp_probe(cdp_port) is not None:
-        return existing
+        return existing, True
 
     profile_dir.mkdir(parents=True, exist_ok=True)
     chrome = locate_chrome_executable()
@@ -172,7 +178,7 @@ def ensure_running(profile_dir: Path, cdp_port: int) -> ProcessIdentity:
         if _cdp_probe(cdp_port) is not None:
             identity = find_dedicated_instance(profile_dir, cdp_port)
             if identity is not None:
-                return identity
+                return identity, False
         time.sleep(0.5)
     raise ChromeLifecycleError(
         f"Chrome did not become ready on CDP port {cdp_port} within {_LAUNCH_READY_TIMEOUT_SECONDS}s."

@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from .collectors._reddit_chrome import profile_status, read_profile_state
 from .collectors.amazon import AmazonCollector
 from .collectors.reddit import RedditCollector
 from .collectors.reddit_browser import RedditBrowserCollector
@@ -37,9 +38,19 @@ class CreateRunRequest(BaseModel):
 
 @router.get("/config")
 def get_config() -> dict:
+    reddit_browser = RedditBrowserCollector()
+    # profile_status()/read_profile_state() are pure filesystem reads on the
+    # profile directory -- independent of whether Chrome itself is currently
+    # locatable (reddit_browser_configured), so always compute both rather
+    # than gating one on the other.
+    profile_state = read_profile_state(reddit_browser.profile_dir)
     return {
         "reddit_configured": RedditCollector().available(),
-        "reddit_browser_configured": RedditBrowserCollector().available(),
+        "reddit_browser_configured": reddit_browser.available(),
+        "reddit_profile_status": profile_status(reddit_browser.profile_dir).value,
+        "reddit_last_success_at": profile_state.get("last_success_at"),
+        "reddit_last_challenge_at": profile_state.get("last_challenge_at"),
+        "reddit_consecutive_challenge_count": profile_state.get("consecutive_challenge_count", 0),
         "amazon_configured": AmazonCollector().available(),
         "youtube_configured": YoutubeCollector().available(),
         "deepseek_configured": DeepSeekClient().available(),

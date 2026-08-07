@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
-import type { AspectGroup, Report as ReportData, RunRecord } from "../api";
+import type { AspectGroup, Report as ReportData, RunRecord, TraceEvent } from "../api";
 import { BarRank } from "../components/BarRank";
 import { Donut } from "../components/Donut";
 import { Icon } from "../components/Icon";
@@ -16,6 +16,8 @@ import { useSourceMeta } from "../lib/sources";
 import type { SourceMeta } from "../lib/sources";
 import { translateAspect } from "../lib/aspectTranslations";
 import { parseFallbackReason, resolveReportSource } from "../lib/reportSource";
+import { summarizeRedditChallenges } from "../lib/redditDiagnostics";
+import type { RedditChallengeSummary } from "../lib/redditDiagnostics";
 
 interface PriorityItem {
   key: string;
@@ -173,7 +175,11 @@ function AspectSection({
 
 // report_source/fallback_reason: visually secondary, never alarming. Missing
 // report_source (an older payload) reads as "legacy_evidence", not an error.
-function ReportSourceMeta({ report }: { report: ReportData }) {
+// redditChallenges: same treatment when evidence is otherwise healthy -- a
+// challenge that happened but didn't stop the run from collecting enough is
+// informational, not something to alarm the user about (see the prominent
+// banner in Report() for the low/no-evidence case, which is a different tier).
+function ReportSourceMeta({ report, redditChallenges }: { report: ReportData; redditChallenges: RedditChallengeSummary }) {
   const { t } = useLanguage();
   const source = resolveReportSource(report.report_source);
   const parsedFallback = parseFallbackReason(report.fallback_reason);
@@ -202,6 +208,11 @@ function ReportSourceMeta({ report }: { report: ReportData }) {
             {fallbackMessage()}
           </div>
         )}
+        {redditChallenges.detected && (
+          <div className="muted" style={{ marginTop: "var(--space-2)" }}>
+            {t("report.reddit.challengeNoteQuiet", { n: redditChallenges.iterations.length })}
+          </div>
+        )}
       </details>
     </section>
   );
@@ -219,6 +230,7 @@ export function Report() {
   const { runId } = useParams<{ runId: string }>();
   const [report, setReport] = useState<ReportData | null>(null);
   const [run, setRun] = useState<RunRecord | null>(null);
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showAllPriorities, setShowAllPriorities] = useState(false);
   const meta = useSourceMeta(run?.data_source);
@@ -229,9 +241,15 @@ export function Report() {
       .then(([reportData, runData]) => {
         setReport(reportData);
         setRun(runData.run);
+        setTraceEvents(runData.trace_events);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [runId]);
+
+  // Milestone 2 / B3, Option A: derived read-time from this run's own trace
+  // events -- no new Report field/schema. api.getRun() already fetches
+  // trace_events for other purposes; this reuses that same data.
+  const redditChallenges = useMemo(() => summarizeRedditChallenges(traceEvents), [traceEvents]);
 
   const priorities = useMemo(
     () => (report ? buildPriorities(report.top_pain_points, report.feature_requests) : []),
@@ -257,12 +275,30 @@ export function Report() {
     .sort((a, b) => b[1] - a[1])
     .map(([subreddit, count]) => ({ key: subreddit, label: `${meta.citationPrefix}${subreddit}`, value: count }));
 
+  // Milestone 2 / B3: distinguish "Reddit blocked this run" from a genuine
+  // no-results outcome -- previously both rendered the exact same generic
+  // empty-state narrative (_summarize_fallback()'s "not enough evidence...
+  // broaden your search" text), which is actively misleading when the real
+  // cause was a block, not a lack of content. Only shown this prominently
+  // when evidence is actually low/zero; a challenge that happened but didn't
+  // stop the run from collecting enough stays in the quiet details section
+  // (see ReportSourceMeta) instead of alarming a user whose report is fine.
+  const showRedditChallengeBanner =
+    run?.data_source === "reddit" && redditChallenges.detected && totalSentiment === 0;
+
   return (
     <div className="page">
       <div className="page-header">
         <h1>{run ? t("report.title", { category: run.product_category }) : t("report.titleFallback")}</h1>
         <Link to={`/runs/${runId}`}>{t("report.backToRun")}</Link>
       </div>
+
+      {showRedditChallengeBanner && (
+        <section className="card error">
+          <strong>{t("report.reddit.challengeBannerTitle")}</strong>
+          <p style={{ marginTop: "var(--space-2)", marginBottom: 0 }}>{t("report.reddit.challengeBannerBody")}</p>
+        </section>
+      )}
 
       <div className="kpi-grid">
         <KpiCard label={t("report.health")} value={`${health}/100`} size="lg" accent={healthStyle.bg}>
@@ -448,7 +484,7 @@ export function Report() {
         </details>
       </section>
 
-      <ReportSourceMeta report={report} />
+      <ReportSourceMeta report={report} redditChallenges={redditChallenges} />
     </div>
   );
 }

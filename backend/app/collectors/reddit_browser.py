@@ -3,13 +3,14 @@ from __future__ import annotations
 import os
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
 from ..llm import load_dotenv
 from ..models import CollectedItem, DataSource, utc_now
-from ..text import simple_similarity
+from ..text import short_quote, simple_similarity
 from ._reddit_chrome import (
     CdpSession,
     ChromeLifecycleError,
@@ -37,6 +38,24 @@ _SEARCH_LOCK = threading.Lock()
 _CHALLENGE_URL_MARKER = "js_challenge"
 _BLOCK_PHRASES = ("blocked by network security", "access denied")
 _CAPTCHA_PHRASES = ("verify you are human", "captcha")
+
+# Stable, public reason codes for WHY classify_page()/is_challenge() decided a
+# page is a challenge -- deliberately fixed string literals, not free text, so
+# they can be persisted into trace_events and relied on by any downstream
+# consumer (diagnostics UI, future analytics/self-improving tooling) without
+# re-parsing prose. Renaming one of these is a breaking change for whatever
+# reads trace_events, not a cosmetic tweak -- add a new value instead of
+# repurposing an old one if the detection logic ever grows a new signal.
+CHALLENGE_REASON_URL_MARKER = "js_challenge_url"
+CHALLENGE_REASON_BLOCK_PHRASE = "block_phrase"
+CHALLENGE_REASON_CAPTCHA_PHRASE = "captcha_phrase"
+CHALLENGE_REASON_EMPTY_TITLE_SHORT_BODY = "empty_title_short_body"
+# Not returned by classify_page() -- stamped directly by _search_locked()'s
+# own short-circuit branch, for the same reason: a downstream reader of a
+# later iteration's trace event should see WHY it was skipped (an earlier
+# iteration in this same run already hit a real challenge), not just another
+# unexplained `challenge_detected: true`.
+CHALLENGE_REASON_RUN_DISABLED = "run_disabled_after_earlier_challenge"
 
 _SEARCH_EXTRACT_JS = r"""
 JSON.stringify((function() {
@@ -122,32 +141,72 @@ _FIND_VIEW_MORE_JS = r"""
 _VIEW_MORE_SELECTOR = "[data-voc-view-more='1']"
 
 
-def is_challenge(final_url: str, body_text: str) -> bool:
+def is_challenge(final_url: str, body_text: str) -> str | None:
     """Pure, unit-testable detector reused verbatim from what was validated
     live across every experiment this session (js_challenge URL redirect,
     the static block page's exact wording, or a CAPTCHA/human-verification
-    prompt)."""
+    prompt). Returns the specific CHALLENGE_REASON_* that matched, or None if
+    the page shows no sign of a challenge -- a non-None string is truthy, so
+    every existing `if is_challenge(...):`-shaped caller keeps working
+    unchanged; only callers that want the specific reason need to read the
+    return value itself."""
     low = (body_text or "").lower()
     if _CHALLENGE_URL_MARKER in (final_url or ""):
-        return True
+        return CHALLENGE_REASON_URL_MARKER
     if any(phrase in low for phrase in _BLOCK_PHRASES):
-        return True
+        return CHALLENGE_REASON_BLOCK_PHRASE
     if any(phrase in low for phrase in _CAPTCHA_PHRASES):
-        return True
-    return False
+        return CHALLENGE_REASON_CAPTCHA_PHRASE
+    return None
 
 
-def classify_page(final_url: str, title: str, body_text: str) -> bool:
+def classify_page(final_url: str, title: str, body_text: str) -> str | None:
     """`is_challenge` plus a defense-in-depth fallback: every observed block
     page this session had an empty <title> and a very short body (the exact
     143-char static page), while every real Reddit page had a real title --
     durable against Reddit changing its block page's wording without relying
-    on that wording at all."""
-    if is_challenge(final_url, body_text):
-        return True
+    on that wording at all. Returns the matched CHALLENGE_REASON_*, or None."""
+    reason = is_challenge(final_url, body_text)
+    if reason is not None:
+        return reason
     if not (title or "").strip() and len(body_text or "") < 500:
-        return True
-    return False
+        return CHALLENGE_REASON_EMPTY_TITLE_SHORT_BODY
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class ChallengeDetail:
+    """A structured record of one challenge occurrence -- deliberately a
+    fixed, named shape (not a loose dict built ad hoc at each call site) so
+    every challenge captured anywhere in this module has the exact same
+    fields, stable key names, and a body snippet capped the same way. Fed
+    into `last_search_stats`/trace_events via `as_stats()`; the field names
+    there (`challenge_reason`/`challenge_url`/`challenge_title`/
+    `challenge_body_snippet`) are the stable, public contract any downstream
+    consumer (diagnostics UI, future analytics/self-improving tooling) should
+    read -- keep them stable, add new ones rather than renaming."""
+
+    reason: str
+    url: str
+    title: str
+    body_snippet: str
+
+    def as_stats(self) -> dict[str, str]:
+        return {
+            "challenge_reason": self.reason,
+            "challenge_url": self.url,
+            "challenge_title": self.title,
+            "challenge_body_snippet": self.body_snippet,
+        }
+
+
+def _build_challenge_detail(reason: str, final_url: str, title: str, body_text: str) -> ChallengeDetail:
+    return ChallengeDetail(
+        reason=reason,
+        url=final_url or "",
+        title=title or "",
+        body_snippet=short_quote(body_text) if body_text else "",
+    )
 
 
 def _normalize_subreddit(raw: str) -> str:
@@ -355,6 +414,9 @@ class RedditBrowserCollector:
         if self._reddit_disabled_for_run:
             stats["challenge_detected"] = True
             stats["chrome_reused"] = True
+            stats.update(
+                ChallengeDetail(reason=CHALLENGE_REASON_RUN_DISABLED, url="", title="", body_snippet="").as_stats()
+            )
             self.last_search_stats = stats
             return []
 
@@ -368,8 +430,8 @@ class RedditBrowserCollector:
                 "normally (no challenge/block page), and close the window. This only needs to happen once."
             )
 
-        ensure_running(self.profile_dir, self.cdp_port)
-        stats["chrome_reused"] = True
+        _identity, chrome_reused = ensure_running(self.profile_dir, self.cdp_port)
+        stats["chrome_reused"] = chrome_reused
         session = CdpSession(self.cdp_port, request_delay=self.request_delay)
 
         items: list[CollectedItem] = []
@@ -380,9 +442,12 @@ class RedditBrowserCollector:
         title = str(session.eval_json("document.title") or "")
         body_text = str(session.eval_json("document.body.innerText") or "")
 
-        if classify_page(final_url, title, body_text):
+        reason = classify_page(final_url, title, body_text)
+        if reason is not None:
+            detail = _build_challenge_detail(reason, final_url, title, body_text)
             self._record_challenge(status)
             stats["challenge_detected"] = True
+            stats.update(detail.as_stats())
             stats["duration_ms"] = int((time.monotonic() - start) * 1000)
             self.last_search_stats = stats
             return items
@@ -392,25 +457,28 @@ class RedditBrowserCollector:
         selected = rank_and_select(query, raw_results, self.max_posts_per_query, self.min_comment_count)
         stats["posts_selected"] = len(selected)
 
-        challenged = False
+        challenge_detail: ChallengeDetail | None = None
         for result in selected:
-            post_items, post_challenged = self._process_post(session, result, query)
+            post_items, post_challenge = self._process_post(session, result, query)
             items.extend(post_items)
             if post_items:
                 stats["posts_opened"] += 1
                 stats["comments_extracted"] += sum(1 for i in post_items if i.item_type == "comment")
-            if post_challenged:
-                challenged = True
+            if post_challenge is not None:
+                challenge_detail = post_challenge
                 break
 
         stats["comments_unique"] = sum(1 for i in items if i.item_type == "comment")
         stats["duration_ms"] = int((time.monotonic() - start) * 1000)
 
-        if challenged:
+        if challenge_detail is not None:
             self._record_challenge(status)
             stats["challenge_detected"] = True
+            stats.update(challenge_detail.as_stats())
         else:
-            updates: dict[str, Any] = {"last_success_at": utc_now()}
+            # B2b: a clean success always resets the streak -- consecutive_challenge_count
+            # is meant to reflect the current run of failures, not a lifetime total.
+            updates: dict[str, Any] = {"last_success_at": utc_now(), "consecutive_challenge_count": 0}
             if status == ProfileStatus.UNKNOWN:
                 updates["initialized_at"] = utc_now()
             write_profile_state(self.profile_dir, **updates)
@@ -429,10 +497,12 @@ class RedditBrowserCollector:
         write_profile_state(self.profile_dir, **updates)
         self._reddit_disabled_for_run = True
 
-    def _process_post(self, session: CdpSession, result: dict[str, Any], query: str) -> tuple[list[CollectedItem], bool]:
+    def _process_post(
+        self, session: CdpSession, result: dict[str, Any], query: str
+    ) -> tuple[list[CollectedItem], ChallengeDetail | None]:
         post_url = result.get("url")
         if not post_url:
-            return [], False
+            return [], None
 
         session.open(post_url)
         session.wait_networkidle()
@@ -440,12 +510,13 @@ class RedditBrowserCollector:
         title = str(session.eval_json("document.title") or "")
         body_text = str(session.eval_json("document.body.innerText") or "")
 
-        if classify_page(final_url, title, body_text):
-            return [], True
+        reason = classify_page(final_url, title, body_text)
+        if reason is not None:
+            return [], _build_challenge_detail(reason, final_url, title, body_text)
 
         post_meta = session.eval_json(_POST_META_JS)
         if not post_meta:
-            return [], False  # not a challenge -- just this one post failed to render right, skip it
+            return [], None  # not a challenge -- just this one post failed to render right, skip it
 
         subreddit = _normalize_subreddit(str(post_meta.get("subreddit") or result.get("subreddit") or "unknown"))
         post_id = result.get("postId")
@@ -469,7 +540,7 @@ class RedditBrowserCollector:
                 continue
             items.append(_comment_to_item(comment, subreddit, post_id, post_title, query))
 
-        return items, False
+        return items, None
 
     def _search_url(self, query: str, subreddit: str) -> str:
         encoded = quote_plus(query)

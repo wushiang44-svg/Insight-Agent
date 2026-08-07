@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.collectors.reddit_browser import (
+    CHALLENGE_REASON_BLOCK_PHRASE,
+    CHALLENGE_REASON_CAPTCHA_PHRASE,
+    CHALLENGE_REASON_EMPTY_TITLE_SHORT_BODY,
+    CHALLENGE_REASON_RUN_DISABLED,
+    CHALLENGE_REASON_URL_MARKER,
     RedditBrowserCollector,
     _comment_to_item,
     _normalize_subreddit,
@@ -29,33 +34,36 @@ REAL_SEARCH_CARD = {
 
 
 def test_challenge_detected_from_js_challenge_url() -> None:
-    assert is_challenge("https://www.reddit.com/?solution=x&js_challenge=1&token=y", "some body") is True
+    assert is_challenge("https://www.reddit.com/?solution=x&js_challenge=1&token=y", "some body") == CHALLENGE_REASON_URL_MARKER
 
 
 def test_challenge_detected_from_block_page_text() -> None:
     body = "You've been blocked by network security.\nIf you think you've been blocked by mistake..."
-    assert is_challenge("https://www.reddit.com/", body) is True
+    assert is_challenge("https://www.reddit.com/", body) == CHALLENGE_REASON_BLOCK_PHRASE
 
 
 def test_challenge_detected_from_captcha_text() -> None:
-    assert is_challenge("https://www.reddit.com/", "Please verify you are human to continue") is True
+    assert is_challenge("https://www.reddit.com/", "Please verify you are human to continue") == CHALLENGE_REASON_CAPTCHA_PHRASE
 
 
 def test_normal_page_is_not_a_challenge() -> None:
     body = "Curious about mechanical keyboards at work\nr/MechanicalKeyboards\n7d ago\n119 votes"
-    assert is_challenge("https://www.reddit.com/r/MechanicalKeyboards/comments/1uweicu/", body) is False
+    assert is_challenge("https://www.reddit.com/r/MechanicalKeyboards/comments/1uweicu/", body) is None
 
 
 def test_classify_page_defense_in_depth_catches_empty_title_even_without_known_phrases() -> None:
     """Durable against Reddit changing its block page's wording -- empty title
     + short body was true on every observed block page this session, even
     when none of the known phrases matched."""
-    assert classify_page("https://www.reddit.com/", "", "Some new block message we've never seen before") is True
+    assert (
+        classify_page("https://www.reddit.com/", "", "Some new block message we've never seen before")
+        == CHALLENGE_REASON_EMPTY_TITLE_SHORT_BODY
+    )
 
 
 def test_classify_page_accepts_real_page_with_real_title() -> None:
     body = "mechanical keyboard - Reddit Search!\n" + ("real search results content " * 20)
-    assert classify_page("https://www.reddit.com/search/?q=mechanical+keyboard", "mechanical keyboard - Reddit Search!", body) is False
+    assert classify_page("https://www.reddit.com/search/?q=mechanical+keyboard", "mechanical keyboard - Reddit Search!", body) is None
 
 
 def test_parse_count_handles_plain_numbers_and_commas() -> None:
@@ -291,17 +299,103 @@ def test_search_returns_partial_results_on_mid_run_challenge_without_raising(mon
     # original function. Missing this distinction is exactly what let this
     # test accidentally launch two real stray Chrome processes on its first
     # run (caught and cleaned up during implementation).
-    monkeypatch.setattr("app.collectors.reddit_browser.ensure_running", lambda *a, **k: None)
+    monkeypatch.setattr("app.collectors.reddit_browser.ensure_running", lambda *a, **k: (None, True))
     monkeypatch.setattr("app.collectors.reddit_browser.CdpSession", lambda *a, **k: session)
 
     items = collector.search("x")
 
     assert items == []  # nothing was ever successfully collected before the challenge in this script
-    assert collector.last_search_stats["challenge_detected"] is True
+    stats = collector.last_search_stats
+    assert stats["challenge_detected"] is True
     assert collector._reddit_disabled_for_run is True
+
+    # B2: the structured diagnostic detail must survive into last_search_stats,
+    # not just the boolean -- this is the exact gap that made the real
+    # run_214c214cd516 investigation require a live reproduction instead of a
+    # log read. The URL marker matches first (is_challenge()'s own checked
+    # order), ahead of the block-phrase text also present in this fixture.
+    assert stats["challenge_reason"] == CHALLENGE_REASON_URL_MARKER
+    assert stats["challenge_url"] == "https://www.reddit.com/?js_challenge=1&token=y"
+    assert stats["challenge_title"] == ""
+    assert "blocked by network security" in stats["challenge_body_snippet"].lower()
 
     # Every subsequent call in the same run must be a cheap no-op -- zero further Chrome/CDP interaction.
     calls_before = len(session.calls)
     more_items = collector.search("y")
     assert more_items == []
     assert len(session.calls) == calls_before  # no new eval/open/click calls were made
+    # B2: the short-circuit path also reports a stable, distinguishable reason
+    # -- a later iteration reading this trace event should see WHY it was
+    # skipped, not just another unexplained challenge_detected: true.
+    assert collector.last_search_stats["challenge_reason"] == CHALLENGE_REASON_RUN_DISABLED
+
+
+def test_chrome_reused_reflects_ensure_running_result_not_hardcoded(monkeypatch: Any, tmp_path: Any) -> None:
+    """B2a: chrome_reused must reflect what ensure_running() actually reports
+    for THIS call (a fresh launch here), not a hardcoded True regardless of
+    whether Chrome was just launched or genuinely reused."""
+    collector = RedditBrowserCollector(profile_dir=tmp_path / "profile", cdp_port=9222, allow_view_more_click=False)
+    (tmp_path / "profile").mkdir()
+    (tmp_path / "profile" / "Local State").write_text("{}", encoding="utf-8")
+    (tmp_path / "profile" / "reddit_collector_state.json").write_text(
+        '{"initialized_at": "2026-01-01T00:00:00+00:00", "last_success_at": "2026-01-01T00:00:00+00:00"}',
+        encoding="utf-8",
+    )
+    session = FakeCdpSession(
+        script=[
+            "https://www.reddit.com/?js_challenge=1&token=y",
+            "",
+            "You've been blocked by network security.",
+        ]
+    )
+    monkeypatch.setattr("app.collectors.reddit_browser.ensure_running", lambda *a, **k: (None, False))
+    monkeypatch.setattr("app.collectors.reddit_browser.CdpSession", lambda *a, **k: session)
+
+    collector.search("x")
+
+    assert collector.last_search_stats["chrome_reused"] is False
+
+
+def test_consecutive_challenge_count_resets_after_a_successful_search(monkeypatch: Any, tmp_path: Any) -> None:
+    """B2b: a clean successful search must reset consecutive_challenge_count
+    to 0 -- previously it only ever incremented, never reset, so it silently
+    drifted from "current failure streak" (its documented meaning) into a
+    lifetime total."""
+    profile_dir = tmp_path / "profile"
+    collector = RedditBrowserCollector(profile_dir=profile_dir, cdp_port=9222, allow_view_more_click=False)
+    profile_dir.mkdir()
+    (profile_dir / "Local State").write_text("{}", encoding="utf-8")
+    (profile_dir / "reddit_collector_state.json").write_text(
+        '{"initialized_at": "2026-01-01T00:00:00+00:00", "last_success_at": "2026-01-01T00:00:00+00:00", '
+        '"consecutive_challenge_count": 2}',
+        encoding="utf-8",
+    )
+
+    session = FakeCdpSession(
+        script=[
+            # search page: url, title, body -- normal
+            "https://www.reddit.com/search/?q=x",
+            "x - Reddit Search!",
+            "some real search page body " * 20,
+            # search results extraction
+            [dict(REAL_SEARCH_CARD)],
+            # post navigation: url, title, body -- normal
+            "https://www.reddit.com/r/MechanicalKeyboards/comments/1uweicu/x/",
+            "Curious about mechanical keyboards at work",
+            "some real post page body " * 20,
+            # post meta
+            {"title": "Curious about mechanical keyboards at work", "bodyText": "body text", "score": "1", "commentCountAttr": "1"},
+            # comments
+            [],
+        ]
+    )
+    monkeypatch.setattr("app.collectors.reddit_browser.ensure_running", lambda *a, **k: (None, True))
+    monkeypatch.setattr("app.collectors.reddit_browser.CdpSession", lambda *a, **k: session)
+
+    collector.search("mechanical keyboard")
+
+    from app.collectors._reddit_chrome import read_profile_state
+
+    state = read_profile_state(profile_dir)
+    assert state["consecutive_challenge_count"] == 0
+    assert "last_success_at" in state

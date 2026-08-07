@@ -52,9 +52,21 @@ export interface RunRecord {
   pipeline_version: string;
 }
 
+// Milestone 2 / B1: mirrors backend/app/collectors/_reddit_chrome.py's
+// ProfileStatus enum values exactly -- a pure filesystem read of the profile
+// directory, independent of reddit_browser_configured (whether Chrome itself
+// is locatable at all). "unavailable" is defined backend-side but never
+// actually returned today; included here for forward-compatibility, not
+// because it's reachable yet.
+export type RedditProfileStatus = "not_initialized" | "unknown" | "healthy" | "challenged" | "unavailable";
+
 export interface AppConfig {
   reddit_configured: boolean;
   reddit_browser_configured: boolean;
+  reddit_profile_status: RedditProfileStatus;
+  reddit_last_success_at: string | null;
+  reddit_last_challenge_at: string | null;
+  reddit_consecutive_challenge_count: number;
   amazon_configured: boolean;
   youtube_configured: boolean;
   deepseek_configured: boolean;
