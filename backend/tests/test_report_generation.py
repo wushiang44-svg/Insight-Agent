@@ -19,7 +19,9 @@ from app.react_agent import (
     _resolve_categories,
     _summarize_fallback,
     _summarize_llm,
+    _thread_dampening_cap,
     _thread_key,
+    _weighted_count,
     summarize,
 )
 
@@ -330,8 +332,25 @@ def test_example_quotes_prefer_source_excerpt_over_evidence_quote() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _synthetic_thread_counts(count: int, thread_count: int) -> dict[str, int]:
+    """Test-only helper: spreads `count` claims as evenly as possible across
+    up to `thread_count` synthetic thread keys. Purely for constructing a
+    physically-plausible AggregateGroup fixture -- production code always
+    derives this from real evidence via _aggregate_claims_by_category."""
+    if count <= 0 or thread_count <= 0:
+        return {}
+    buckets = min(thread_count, count)
+    base, remainder = divmod(count, buckets)
+    return {f"t{i}": base + (1 if i < remainder else 0) for i in range(buckets)}
+
+
 def make_group(
-    claim_type: ClaimType, category_key: str = "cc_a", count: int = 5, evidence_count: int = 5, thread_count: int = 5
+    claim_type: ClaimType,
+    category_key: str = "cc_a",
+    count: int = 5,
+    evidence_count: int = 5,
+    thread_count: int = 5,
+    thread_counts: dict[str, int] | None = None,
 ) -> AggregateGroup:
     return AggregateGroup(
         claim_type=claim_type,
@@ -345,6 +364,7 @@ def make_group(
         example_quotes=[],
         evidence_count=evidence_count,
         thread_count=thread_count,
+        thread_counts=thread_counts if thread_counts is not None else _synthetic_thread_counts(count, thread_count),
     )
 
 
@@ -410,6 +430,291 @@ def test_report_inputs_sections_sorted_by_count_descending() -> None:
     inputs = _build_report_inputs({(ClaimType.PROBLEM, "cc_small"): small, (ClaimType.PROBLEM, "cc_big"): big})
 
     assert [entry["count"] for entry in inputs.top_pain_points] == [9, 1]
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3 / A3 -- thread-concentration dampening
+# ---------------------------------------------------------------------------
+
+
+def test_weighted_count_caps_each_thread_independently() -> None:
+    # One thread with 10 claims, one with 1 -- capped at 3, the big thread's
+    # extra 7 claims stop moving the ranking needle past the cap.
+    assert _weighted_count({"thread_a": 10, "thread_b": 1}, cap=3) == 4
+
+
+def test_weighted_count_is_a_no_op_when_no_thread_exceeds_the_cap() -> None:
+    # Real-run finding: a group with 3 threads of 1 claim each is completely
+    # unaffected by dampening -- weighted_count == raw count.
+    thread_counts = {"a": 1, "b": 1, "c": 1}
+    assert _weighted_count(thread_counts, cap=3) == sum(thread_counts.values())
+
+
+def test_weighted_count_empty_thread_counts_is_zero() -> None:
+    assert _weighted_count({}, cap=3) == 0
+
+
+def test_thread_dampening_cap_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THREAD_DAMPENING_CAP", "5")
+    assert _thread_dampening_cap() == 5
+
+
+def test_thread_dampening_cap_defaults_to_three(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("THREAD_DAMPENING_CAP", raising=False)
+    assert _thread_dampening_cap() == 3
+
+
+def _make_thread_claims(
+    claim_prefix: str,
+    thread_id: str,
+    n: int,
+    category_id: str,
+    claim_type: ClaimType,
+    evidence_by_id: dict[str, Evidence],
+) -> list[Claim]:
+    """Builds n claims, each from its own comment within the SAME Reddit
+    thread (shared /comments/<thread_id>/ prefix), all resolved to
+    category_id -- the exact real shape _thread_key() groups on."""
+    claims = []
+    for i in range(n):
+        evidence_id = f"ev_{claim_prefix}_{i}"
+        evidence_by_id[evidence_id] = make_evidence(
+            evidence_id=evidence_id,
+            source_url=f"https://reddit.com/r/dogfood/comments/{thread_id}/comment/c{i}/",
+        )
+        claims.append(
+            make_claim(f"cl_{claim_prefix}_{i}", evidence_id=evidence_id, claim_type=claim_type, canonical_category=category_id)
+        )
+    return claims
+
+
+def test_dampened_sort_matches_the_real_run_55025c50e81b_finding() -> None:
+    """Reproduces the exact real-data finding from the Milestone 3 plan
+    (run_55025c50e81b): floor damage (11 claims, 2 threads) stays #1;
+    app real time position update (9 claims, ALL from 1 thread) must rank
+    BELOW navigation/collision avoidance (3 claims, 3 independent threads)
+    despite having 3x the raw mentions."""
+    evidence_by_id: dict[str, Evidence] = {}
+    floor = make_category("cc_floor", "floor damage")
+    app_pos = make_category("cc_app", "app real time position update")
+    nav = make_category("cc_nav", "navigation/collision avoidance")
+
+    claims: list[Claim] = []
+    claims += _make_thread_claims("floor_a", "t_floor_a", 10, "cc_floor", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("floor_b", "t_floor_b", 1, "cc_floor", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("app", "t_app", 9, "cc_app", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("nav_a", "t_nav_a", 1, "cc_nav", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("nav_b", "t_nav_b", 1, "cc_nav", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("nav_c", "t_nav_c", 1, "cc_nav", ClaimType.PROBLEM, evidence_by_id)
+
+    resolved = _resolve_categories(claims, [floor, app_pos, nav])
+    aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+    inputs = _build_report_inputs(aggregated)
+
+    labels_in_order = [entry["aspect"] for entry in inputs.top_pain_points]
+    assert labels_in_order == ["floor damage", "navigation/collision avoidance", "app real time position update"]
+
+    by_label = {entry["aspect"]: entry for entry in inputs.top_pain_points}
+    # Raw counts must stay exactly as collected, regardless of rank.
+    assert by_label["floor damage"]["count"] == 11
+    assert by_label["app real time position update"]["count"] == 9
+    assert by_label["navigation/collision avoidance"]["count"] == 3
+    # weighted_count/thread_count reflect the dampening that reordered them.
+    assert by_label["floor damage"]["weighted_count"] == 4
+    assert by_label["app real time position update"]["weighted_count"] == 3
+    assert by_label["navigation/collision avoidance"]["weighted_count"] == 3
+    assert by_label["navigation/collision avoidance"]["thread_count"] == 3
+    assert by_label["app real time position update"]["thread_count"] == 1
+
+
+def test_tiebreak_uses_thread_count_before_raw_count() -> None:
+    """The exact contradiction caught during plan review: two categories tied
+    on weighted_count must NOT fall through to raw count first -- the more
+    thread-diverse one must win."""
+    evidence_by_id: dict[str, Evidence] = {}
+    cat_diverse = make_category("cc_diverse", "diverse issue")
+    cat_single = make_category("cc_single", "single-thread issue")
+
+    claims: list[Claim] = []
+    # Both weighted_count == 3. cat_single has the higher RAW count (9 vs 3),
+    # but only 1 thread -- must rank BELOW the 3-thread group.
+    claims += _make_thread_claims("single", "t_single", 9, "cc_single", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("d1", "t_d1", 1, "cc_diverse", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("d2", "t_d2", 1, "cc_diverse", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("d3", "t_d3", 1, "cc_diverse", ClaimType.PROBLEM, evidence_by_id)
+
+    resolved = _resolve_categories(claims, [cat_diverse, cat_single])
+    aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+    inputs = _build_report_inputs(aggregated)
+
+    by_label = {entry["aspect"]: entry for entry in inputs.top_pain_points}
+    assert by_label["diverse issue"]["weighted_count"] == by_label["single-thread issue"]["weighted_count"] == 3
+    assert [entry["aspect"] for entry in inputs.top_pain_points] == ["diverse issue", "single-thread issue"]
+
+
+def test_tiebreak_uses_raw_count_when_weighted_and_thread_count_tie() -> None:
+    evidence_by_id: dict[str, Evidence] = {}
+    cat_big = make_category("cc_big", "big raw count")
+    cat_small = make_category("cc_small", "small raw count")
+
+    claims: list[Claim] = []
+    # Both: weighted = min(x,3) + min(1,3), thread_count=2 -- x=10 vs x=3
+    # give the SAME weighted total (4) despite very different raw counts.
+    claims += _make_thread_claims("big1", "t_big1", 10, "cc_big", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("big2", "t_big2", 1, "cc_big", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("small1", "t_small1", 3, "cc_small", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("small2", "t_small2", 1, "cc_small", ClaimType.PROBLEM, evidence_by_id)
+
+    resolved = _resolve_categories(claims, [cat_big, cat_small])
+    aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+    inputs = _build_report_inputs(aggregated)
+
+    by_label = {entry["aspect"]: entry for entry in inputs.top_pain_points}
+    assert by_label["big raw count"]["weighted_count"] == by_label["small raw count"]["weighted_count"] == 4
+    assert by_label["big raw count"]["thread_count"] == by_label["small raw count"]["thread_count"] == 2
+    assert [entry["aspect"] for entry in inputs.top_pain_points] == ["big raw count", "small raw count"]  # 11 > 4
+
+
+def test_tiebreak_falls_back_to_label_ascending_when_everything_else_ties() -> None:
+    evidence_by_id: dict[str, Evidence] = {}
+    cat_z = make_category("cc_z", "zzz issue")
+    cat_a = make_category("cc_a2", "aaa issue")
+
+    claims: list[Claim] = []
+    claims += _make_thread_claims("z", "t_z", 3, "cc_z", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("a", "t_a", 3, "cc_a2", ClaimType.PROBLEM, evidence_by_id)
+
+    resolved = _resolve_categories(claims, [cat_z, cat_a])
+    aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+    inputs = _build_report_inputs(aggregated)
+
+    assert [entry["aspect"] for entry in inputs.top_pain_points] == ["aaa issue", "zzz issue"]
+
+
+def test_dampening_applies_uniformly_to_all_four_always_surfaced_sections() -> None:
+    """feature_requests/praised_aspects/competitor_mentions get the same
+    treatment as top_pain_points -- not special-cased to pain points only."""
+    for claim_type, section_name in [
+        (ClaimType.FEATURE_REQUEST, "feature_requests"),
+        (ClaimType.PRAISE, "praised_aspects"),
+        (ClaimType.COMPARISON, "competitor_mentions"),
+    ]:
+        evidence_by_id: dict[str, Evidence] = {}
+        cat_diverse = make_category("cc_diverse", "diverse issue")
+        cat_single = make_category("cc_single", "single-thread issue")
+        claims: list[Claim] = []
+        claims += _make_thread_claims("single", "t_single", 9, "cc_single", claim_type, evidence_by_id)
+        claims += _make_thread_claims("d1", "t_d1", 1, "cc_diverse", claim_type, evidence_by_id)
+        claims += _make_thread_claims("d2", "t_d2", 1, "cc_diverse", claim_type, evidence_by_id)
+        claims += _make_thread_claims("d3", "t_d3", 1, "cc_diverse", claim_type, evidence_by_id)
+
+        resolved = _resolve_categories(claims, [cat_diverse, cat_single])
+        aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+        inputs = _build_report_inputs(aggregated)
+
+        entries = getattr(inputs, section_name)
+        assert [entry["aspect"] for entry in entries] == ["diverse issue", "single-thread issue"], section_name
+
+
+def test_shipping_and_seller_service_sections_are_not_dampened(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Milestone 3 explicitly excludes the two threshold-gated sections from
+    dampened sorting -- their internal order stays plain raw-count
+    descending, unchanged from before this milestone."""
+    monkeypatch.setenv("SHIPPING_SERVICE_MIN_CLAIMS", "1")
+    monkeypatch.setenv("SHIPPING_SERVICE_MIN_EVIDENCE", "1")
+    monkeypatch.setenv("SHIPPING_SERVICE_MIN_THREADS", "1")
+
+    big_single_thread = make_group(
+        ClaimType.SHIPPING_ISSUE, category_key="cc_big", count=9, evidence_count=9, thread_count=1,
+        thread_counts={"t1": 9},
+    )
+    small_multi_thread = make_group(
+        ClaimType.SHIPPING_ISSUE, category_key="cc_small", count=3, evidence_count=3, thread_count=3,
+        thread_counts={"t1": 1, "t2": 1, "t3": 1},
+    )
+
+    inputs = _build_report_inputs(
+        {
+            (ClaimType.SHIPPING_ISSUE, "cc_big"): big_single_thread,
+            (ClaimType.SHIPPING_ISSUE, "cc_small"): small_multi_thread,
+        }
+    )
+
+    # If this section were dampened, the 1-thread/9-claim group would drop
+    # behind the 3-thread/3-claim one -- it must NOT, per the approved scope.
+    assert [entry["count"] for entry in inputs.shipping_issues] == [9, 3]
+
+
+def test_raw_count_field_is_never_altered_by_dampening() -> None:
+    evidence_by_id: dict[str, Evidence] = {}
+    category = make_category("cc_floor", "floor damage")
+    claims: list[Claim] = []
+    claims += _make_thread_claims("a", "t_a", 10, "cc_floor", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("b", "t_b", 1, "cc_floor", ClaimType.PROBLEM, evidence_by_id)
+
+    resolved = _resolve_categories(claims, [category])
+    aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+    inputs = _build_report_inputs(aggregated)
+
+    assert inputs.top_pain_points[0]["count"] == 11  # the true, uncapped total -- never the dampened 4
+
+
+def test_non_reddit_source_dampening_is_a_no_op_for_the_common_one_claim_per_evidence_case() -> None:
+    """Milestone 3 requirement: non-Reddit sources (thread_key degenerates to
+    evidence_id) stay behaviorally unchanged in the common case -- every
+    'thread' has exactly 1 claim, so no thread can ever exceed the cap and
+    weighted_count == raw count always."""
+    evidence_by_id = {
+        "ev_1": make_evidence("ev_1", source_url="https://amazon.com/reviews/r1"),
+        "ev_2": make_evidence("ev_2", source_url="https://amazon.com/reviews/r2"),
+        "ev_3": make_evidence("ev_3", source_url="https://amazon.com/reviews/r3"),
+    }
+    category = make_category("cc_a", "battery life")
+    claims = [make_claim(f"cl_{i}", evidence_id=f"ev_{i}", canonical_category="cc_a") for i in (1, 2, 3)]
+    resolved = _resolve_categories(claims, [category])
+    aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+    [group] = list(aggregated.values())
+
+    assert group.thread_count == group.count == 3
+    assert _weighted_count(group.thread_counts, cap=3) == group.count
+
+
+def test_non_reddit_source_can_still_dampen_when_multiple_claims_share_one_evidence_item() -> None:
+    """Named, accepted edge case: if several claims are extracted from the
+    SAME non-Reddit evidence item (one review yielding multiple claims in
+    the same category), that evidence_id is one 'thread' with >1 claim, and
+    dampening CAN apply -- intentional, not a bug. _thread_key()'s non-Reddit
+    fallback is evidence_id, and the formula is defined in terms of claims
+    per thread, not per source, so this follows the same rule Reddit does."""
+    evidence_by_id = {"ev_1": make_evidence("ev_1", source_url="https://amazon.com/reviews/r1")}
+    category = make_category("cc_a", "battery life")
+    claims = [make_claim(f"cl_{i}", evidence_id="ev_1", canonical_category="cc_a") for i in range(5)]
+    resolved = _resolve_categories(claims, [category])
+    aggregated = _aggregate_claims_by_category(claims, resolved, evidence_by_id)
+    [group] = list(aggregated.values())
+
+    assert group.thread_count == 1
+    assert _weighted_count(group.thread_counts, cap=3) == 3
+
+
+def test_summarize_end_to_end_reflects_dampened_order() -> None:
+    """Confirms the dampened order actually reaches the final Report object
+    through the full summarize() call, not just _build_report_inputs() in
+    isolation."""
+    evidence_by_id: dict[str, Evidence] = {}
+    floor = make_category("cc_floor", "floor damage")
+    app_pos = make_category("cc_app", "app real time position update")
+
+    claims: list[Claim] = []
+    claims += _make_thread_claims("floor_a", "t_floor_a", 10, "cc_floor", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("floor_b", "t_floor_b", 1, "cc_floor", ClaimType.PROBLEM, evidence_by_id)
+    claims += _make_thread_claims("app", "t_app", 9, "cc_app", ClaimType.PROBLEM, evidence_by_id)
+
+    report = summarize("run_1", "robot vacuum cleaners", list(evidence_by_id.values()), claims, [floor, app_pos], no_llm())
+
+    assert [entry["aspect"] for entry in report.top_pain_points] == ["floor damage", "app real time position update"]
+    assert report.top_pain_points[0]["count"] == 11
+    assert report.top_pain_points[1]["count"] == 9
 
 
 # ---------------------------------------------------------------------------

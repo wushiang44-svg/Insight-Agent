@@ -8,7 +8,15 @@ import { Icon } from "../components/Icon";
 import { KpiCard } from "../components/KpiCard";
 import { CATEGORY_STYLES, SENTIMENT_COLORS } from "../lib/categories";
 import type { Category } from "../lib/categories";
-import { healthLabel, healthScore, priorityScore, severityFromScore, starRating, SEVERITY_STYLES } from "../lib/insights";
+import {
+  compareByThreadDampenedRank,
+  healthLabel,
+  healthScore,
+  priorityScore,
+  severityFromScore,
+  starRating,
+  SEVERITY_STYLES,
+} from "../lib/insights";
 import type { SeverityLevel } from "../lib/insights";
 import { useLanguage } from "../lib/i18n";
 import type { Language } from "../lib/i18n";
@@ -30,19 +38,28 @@ interface PriorityItem {
   group: AspectGroup;
 }
 
-function buildPriorities(painPoints: AspectGroup[], featureRequests: AspectGroup[]): PriorityItem[] {
+// Milestone 3 / A3: the max-for-type normalizer and priorityScore's frequency
+// term both use weighted_count (falling back to raw count for older
+// payloads) -- the SAME thread-dampened signal the backend already sorted
+// top_pain_points/feature_requests by, so this "roadmap" ranking can never
+// silently diverge from the bar chart above it on the same page. The final
+// sort's tiebreak (when priorityScore rounds two groups to the same integer
+// score -- common, since 55% of the score is now the shared weighted signal)
+// uses the exact same comparator the backend's own sort key mirrors.
+export function buildPriorities(painPoints: AspectGroup[], featureRequests: AspectGroup[]): PriorityItem[] {
+  const weighted = (group: AspectGroup) => group.weighted_count ?? group.count;
   const painTotal = painPoints.reduce((sum, group) => sum + group.count, 0);
   const featureTotal = featureRequests.reduce((sum, group) => sum + group.count, 0);
-  const painMax = Math.max(...painPoints.map((group) => group.count), 1);
-  const featureMax = Math.max(...featureRequests.map((group) => group.count), 1);
+  const painMax = Math.max(...painPoints.map(weighted), 1);
+  const featureMax = Math.max(...featureRequests.map(weighted), 1);
 
   const toItem = (
     group: AspectGroup,
     category: PriorityItem["category"],
     totalForType: number,
-    maxForType: number,
+    maxWeightedForType: number,
   ): PriorityItem => {
-    const score = priorityScore(group, maxForType);
+    const score = priorityScore(group, maxWeightedForType);
     return {
       key: `${category}:${group.aspect}`,
       aspect: group.aspect,
@@ -58,7 +75,7 @@ function buildPriorities(painPoints: AspectGroup[], featureRequests: AspectGroup
   return [
     ...painPoints.map((group) => toItem(group, "pain_point", painTotal, painMax)),
     ...featureRequests.map((group) => toItem(group, "feature_request", featureTotal, featureMax)),
-  ].sort((a, b) => b.score - a.score);
+  ].sort((a, b) => b.score - a.score || compareByThreadDampenedRank(a.group, b.group));
 }
 
 function whyBullets(item: PriorityItem, meta: SourceMeta, t: (key: string, vars?: Record<string, string | number>) => string): string[] {

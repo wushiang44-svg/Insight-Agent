@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { Report } from "./Report";
+import { Report, buildPriorities } from "./Report";
 import { LanguageProvider } from "../lib/i18n";
 import { mockFetchWith } from "../test/mockFetch";
 import type { AspectGroup, Report as ReportData, RunRecord, TraceEvent } from "../api";
@@ -273,5 +273,65 @@ describe("Report -- Reddit challenge diagnostics (Milestone 2 / B3, Option A)", 
   it("does not crash and shows nothing extra for older payloads with no trace_events at all", async () => {
     const { container } = await renderReport(makeReport(), makeRun({ data_source: "reddit" }), []);
     expect(container.textContent).not.toContain("Reddit blocked this run");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Milestone 3 / A3, requirement 7: end-to-end backend/frontend ordering
+// consistency. The fixture below is the EXACT backend-sorted shape (already
+// verified against the real run_55025c50e81b replay and against
+// backend/tests/test_report_generation.py's own
+// test_dampened_sort_matches_the_real_run_55025c50e81b_finding /
+// test_tiebreak_uses_thread_count_before_raw_count) -- this test proves the
+// frontend's own independent priority ranking (buildPriorities(), which
+// recomputes priorityScore() rather than just trusting array order) lands on
+// the identical order for the pain-point subset, not just that the two
+// happen to look similar.
+// ---------------------------------------------------------------------------
+
+describe("Report -- backend/frontend ordering consistency (Milestone 3 / A3)", () => {
+  it("buildPriorities()'s pain-point order matches the backend's already-dampened-sorted array order", () => {
+    // Same shape as run_55025c50e81b's real top_pain_points, already in the
+    // backend's correct weighted_count -> thread_count -> count -> label
+    // order. sentiment_counts/subreddit_count/avg_confidence are held
+    // UNIFORM across every entry (proportional negative count, same
+    // confidence/subreddit spread) so priorityScore()'s other three terms
+    // can't accidentally reorder things -- this test isolates the
+    // weighted_count/thread_count/count/label ranking behavior specifically.
+    const uniform = (count: number) => ({ subreddit_count: 1, avg_confidence: 0.8, sentiment_counts: { negative: count } });
+    const backendOrderedPainPoints: AspectGroup[] = [
+      makeAspectGroup({ aspect: "floor damage", count: 11, weighted_count: 4, thread_count: 2, ...uniform(11) }),
+      makeAspectGroup({ aspect: "mop performance", count: 3, weighted_count: 3, thread_count: 3, ...uniform(3) }),
+      makeAspectGroup({ aspect: "navigation/collision avoidance", count: 3, weighted_count: 3, thread_count: 3, ...uniform(3) }),
+      makeAspectGroup({ aspect: "price vs value", count: 3, weighted_count: 3, thread_count: 3, ...uniform(3) }),
+      makeAspectGroup({ aspect: "durability", count: 3, weighted_count: 3, thread_count: 2, ...uniform(3) }),
+      makeAspectGroup({ aspect: "reliability", count: 3, weighted_count: 3, thread_count: 2, ...uniform(3) }),
+      makeAspectGroup({ aspect: "app real time position update", count: 9, weighted_count: 3, thread_count: 1, ...uniform(9) }),
+      makeAspectGroup({ aspect: "security/privacy", count: 2, weighted_count: 2, thread_count: 1, ...uniform(2) }),
+    ];
+    const backendOrderIndex = new Map(backendOrderedPainPoints.map((g, i) => [g.aspect, i]));
+
+    // Feed them in DELIBERATELY SHUFFLED (not backend order) -- proves
+    // buildPriorities() derives the order itself from weighted_count/
+    // thread_count/count/label, rather than just preserving whatever array
+    // order it happened to receive.
+    const shuffled = [...backendOrderedPainPoints].reverse();
+    const priorities = buildPriorities(shuffled, []);
+    const painPointOrder = priorities.filter((p) => p.category === "pain_point").map((p) => p.aspect);
+
+    expect(painPointOrder).toEqual(backendOrderedPainPoints.map((g) => g.aspect));
+    // Belt-and-suspenders: also confirm it's monotonic against the backend's
+    // own index, not just coincidentally equal for this one array length.
+    for (let i = 1; i < painPointOrder.length; i++) {
+      expect(backendOrderIndex.get(painPointOrder[i])!).toBeGreaterThan(backendOrderIndex.get(painPointOrder[i - 1])!);
+    }
+  });
+
+  it("preserves raw count in the priority item even though ranking uses weighted_count", () => {
+    const priorities = buildPriorities(
+      [makeAspectGroup({ aspect: "app real time position update", count: 9, weighted_count: 3, thread_count: 1 })],
+      [],
+    );
+    expect(priorities[0].count).toBe(9); // never the dampened 3
   });
 });

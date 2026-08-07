@@ -712,6 +712,13 @@ class AggregateGroup:
     # shipping_issues/seller_service_issues gating.
     evidence_count: int
     thread_count: int
+    # Milestone 3 / A3: claim count per distinct thread -- the raw
+    # distribution _weighted_count() dampens. Kept separate from thread_count
+    # (which only needs the distinct-key count) because (count, thread_count)
+    # alone cannot reconstruct the per-thread split (e.g. 9 claims across 3
+    # threads could be 3-3-3 or 7-1-1 -- materially different once capped).
+    # Internal only -- never serialized via _aggregate_group_to_dict.
+    thread_counts: dict[str, int]
 
 
 def _aggregate_claims_by_category(
@@ -737,6 +744,11 @@ def _aggregate_claims_by_category(
         label = resolved[group_claims[0].claim_id].label
         category_status = resolved[group_claims[0].claim_id].status
         evidences = [evidence_by_id[c.evidence_id] for c in group_claims if c.evidence_id in evidence_by_id]
+        # One tally per claim (not per distinct evidence) -- a thread's weight
+        # in the dampening formula is its CLAIM count, matching the approved
+        # formula ("claims_from_thread") exactly, including the case where
+        # several claims share one evidence item.
+        thread_counts: dict[str, int] = dict(Counter(_thread_key(e) for e in evidences))
 
         quote_candidates = sorted(group_claims, key=lambda c: c.confidence, reverse=True)[:3]
         example_quotes = []
@@ -761,7 +773,8 @@ def _aggregate_claims_by_category(
             sentiment_counts=dict(Counter(c.sentiment.value for c in group_claims)),
             example_quotes=example_quotes,
             evidence_count=len({c.evidence_id for c in group_claims}),
-            thread_count=len({_thread_key(e) for e in evidences}),
+            thread_count=len(thread_counts),
+            thread_counts=thread_counts,
         )
     return aggregated
 
@@ -824,15 +837,47 @@ def _shipping_service_min_threads() -> int:
     return _read_min_count_env("SHIPPING_SERVICE_MIN_THREADS", _SHIPPING_SERVICE_MIN_THREADS_DEFAULT)
 
 
-def _aggregate_group_to_dict(group: AggregateGroup) -> dict[str, Any]:
+# Milestone 3 / A3 -- thread-concentration dampening. Validated against real
+# stored data (run_55025c50e81b): with this default, a category whose 9
+# claims all came from one Reddit thread dampens to the same rank-relevant
+# weight as categories with only 3 claims each spread across 3 independent
+# threads -- correctly demoting a single-conversation echo below genuinely
+# corroborated (if smaller) issues. Fixed and env-configurable, same pattern
+# as the shipping/service thresholds above; deliberately NOT auto-tuned --
+# a fixed, human-set constant in v1.x, not a target for adaptive/learned
+# adjustment (that boundary is a deliberate v1.x/v2 line, not an oversight).
+_THREAD_DAMPENING_CAP_DEFAULT = 3
+_DAMPENED_SECTIONS = {"top_pain_points", "feature_requests", "praised_aspects", "competitor_mentions"}
+
+
+def _thread_dampening_cap() -> int:
+    return _read_min_count_env("THREAD_DAMPENING_CAP", _THREAD_DAMPENING_CAP_DEFAULT)
+
+
+def _weighted_count(thread_counts: dict[str, int], cap: int) -> int:
+    """weighted_count = sum(min(claims_from_thread, cap) for each distinct
+    thread). Ranking-only -- never displayed as a "mentions" count; the raw,
+    uncapped `count` on every report entry is untouched by this function."""
+    return sum(min(n, cap) for n in thread_counts.values())
+
+
+def _aggregate_group_to_dict(group: AggregateGroup, weighted_count: int) -> dict[str, Any]:
     return {
         "aspect": group.label,
+        # The literal, uncapped mentions count -- never adjusted by thread
+        # dampening. Milestone 3 requirement: what a merchant reads as "how
+        # many mentions" must never change.
         "count": group.count,
         "subreddit_count": group.subreddit_count,
         "avg_confidence": group.avg_confidence,
         "sentiment_counts": group.sentiment_counts,
         "example_quotes": group.example_quotes,
         "category_status": group.category_status,
+        "thread_count": group.thread_count,
+        # Ranking-only signal (Milestone 3 / A3) -- ties for "how many mentions"
+        # to real diversity of source threads, capped per thread. Never meant
+        # to be read as a mentions count itself.
+        "weighted_count": weighted_count,
     }
 
 
@@ -841,15 +886,23 @@ def _build_report_inputs(aggregated: dict[tuple[ClaimType, str], AggregateGroup]
     Report fields. This is where the shipping/seller-service support-
     threshold gating is applied -- a group only lands in shipping_issues/
     seller_service_issues if it clears all three configured minimums (claim
-    count, distinct evidence count, distinct thread count). The four
-    always-surfaced sections are unfiltered, sorted by count descending, same
-    as _aggregate_by_aspect() today. No truncation happens here -- the
-    existing [:8]-for-the-LLM-prompt truncation stays inside _summarize_llm(),
-    unchanged."""
-    sections: dict[str, list[dict[str, Any]]] = {name: [] for name in set(_CLAIM_TYPE_SECTION.values())}
+    count, distinct evidence count, distinct thread count); those two
+    sections' own internal order is intentionally left as plain count-
+    descending, unchanged from before Milestone 3 -- shipping/seller-service
+    threshold *behavior* is explicitly out of this milestone's scope.
+
+    The four always-surfaced sections (Milestone 3 / A3) are sorted by
+    weighted_count descending -> thread_count descending -> raw count
+    descending -> canonical label ascending, computed once per group here
+    (the only place the configured cap is read) and passed into
+    _aggregate_group_to_dict so it's never recomputed. No truncation happens
+    here -- the existing [:8]-for-the-LLM-prompt truncation stays inside
+    _summarize_llm(), unchanged."""
+    sections: dict[str, list[AggregateGroup]] = {name: [] for name in set(_CLAIM_TYPE_SECTION.values())}
     min_claims = _shipping_service_min_claims()
     min_evidence = _shipping_service_min_evidence()
     min_threads = _shipping_service_min_threads()
+    cap = _thread_dampening_cap()
 
     for (claim_type, _category_key), group in aggregated.items():
         section_name = _CLAIM_TYPE_SECTION.get(claim_type)
@@ -859,18 +912,23 @@ def _build_report_inputs(aggregated: dict[tuple[ClaimType, str], AggregateGroup]
             group.count < min_claims or group.evidence_count < min_evidence or group.thread_count < min_threads
         ):
             continue
-        sections[section_name].append(_aggregate_group_to_dict(group))
+        sections[section_name].append(group)
 
-    for entries in sections.values():
-        entries.sort(key=lambda entry: entry["count"], reverse=True)
+    result_sections: dict[str, list[dict[str, Any]]] = {}
+    for name, groups in sections.items():
+        if name in _DAMPENED_SECTIONS:
+            groups.sort(key=lambda g: (-_weighted_count(g.thread_counts, cap), -g.thread_count, -g.count, g.label))
+        else:
+            groups.sort(key=lambda g: -g.count)  # unchanged: shipping/seller-service keep plain count order
+        result_sections[name] = [_aggregate_group_to_dict(g, _weighted_count(g.thread_counts, cap)) for g in groups]
 
     return ReportInputs(
-        top_pain_points=sections["top_pain_points"],
-        feature_requests=sections["feature_requests"],
-        praised_aspects=sections["praised_aspects"],
-        competitor_mentions=sections["competitor_mentions"],
-        shipping_issues=sections["shipping_issues"],
-        seller_service_issues=sections["seller_service_issues"],
+        top_pain_points=result_sections["top_pain_points"],
+        feature_requests=result_sections["feature_requests"],
+        praised_aspects=result_sections["praised_aspects"],
+        competitor_mentions=result_sections["competitor_mentions"],
+        shipping_issues=result_sections["shipping_issues"],
+        seller_service_issues=result_sections["seller_service_issues"],
     )
 
 

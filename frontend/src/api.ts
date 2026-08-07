@@ -105,12 +105,20 @@ export type CategoryStatusOrNull = "approved" | "proposed" | "uncategorized" | n
 
 export interface AspectGroup {
   aspect: string;
+  // The true, uncapped mentions count -- Milestone 3 / A3's thread-
+  // concentration dampening never touches this field, only ordering.
   count: number;
   subreddit_count?: number;
   avg_confidence?: number;
   sentiment_counts?: Record<string, number>;
   example_quotes: ExampleQuote[];
   category_status?: CategoryStatusOrNull;
+  // Milestone 3 / A3: distinct Reddit-thread count (or, for non-Reddit
+  // sources, distinct evidence count -- see _thread_key()'s fallback) and
+  // the backend-computed, thread-dampened ranking signal. Optional/missing
+  // on older payloads -- callers must fall back to `count`, never crash.
+  thread_count?: number;
+  weighted_count?: number;
 }
 
 export type ReportSource = "claims" | "legacy_evidence";

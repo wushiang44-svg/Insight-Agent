@@ -63,6 +63,12 @@ export interface AggregateForScoring {
   subreddit_count?: number;
   avg_confidence?: number;
   sentiment_counts?: Record<string, number>;
+  // Milestone 3 / A3 -- backend-computed thread-concentration-dampened
+  // ranking signal (backend/app/react_agent.py's _weighted_count()).
+  // Optional/backward-compatible: an older payload without it falls back to
+  // raw `count`, matching pre-Milestone-3 behavior exactly, never crashing.
+  weighted_count?: number;
+  thread_count?: number;
 }
 
 /**
@@ -70,13 +76,22 @@ export interface AggregateForScoring {
  * single most-mentioned aspect of its type (55%), how many distinct
  * communities mention it (20%), how negative it reads (15%), and how
  * confident the analyst was (10%). Frequency is normalized against the
- * *max* count for the type rather than the sum — with many aspects in play,
- * a sum-based share buries every aspect near zero even when one is a real,
- * widely-corroborated complaint. Directional, not mathematically precise —
- * tuned to rank "what to fix first," not to be audited.
+ * *max weighted count* for the type rather than the sum — with many aspects
+ * in play, a sum-based share buries every aspect near zero even when one is
+ * a real, widely-corroborated complaint. Directional, not mathematically
+ * precise — tuned to rank "what to fix first," not to be audited.
+ *
+ * Milestone 3 / A3: frequency dominance is computed from `weighted_count`
+ * (thread-dampened), not raw `count` — the SAME signal backend/app/
+ * react_agent.py's _build_report_inputs() already sorts by, computed once
+ * there and consumed here rather than re-derived, per the approved
+ * backend/frontend consistency strategy (never re-implement the dampening
+ * math in TypeScript; only the tiny comparator below is duplicated, and an
+ * end-to-end test proves it agrees with the backend's own order).
  */
-export function priorityScore(group: AggregateForScoring, maxCountForType: number): number {
-  const frequencyDominance = maxCountForType > 0 ? group.count / maxCountForType : 0;
+export function priorityScore(group: AggregateForScoring, maxWeightedCountForType: number): number {
+  const weightedCount = group.weighted_count ?? group.count;
+  const frequencyDominance = maxWeightedCountForType > 0 ? weightedCount / maxWeightedCountForType : 0;
   const subredditBonus = Math.min(group.subreddit_count ?? 1, 4) / 4;
   const sentimentCounts = group.sentiment_counts ?? {};
   const negativeCount = sentimentCounts.negative ?? 0;
@@ -85,4 +100,35 @@ export function priorityScore(group: AggregateForScoring, maxCountForType: numbe
 
   const raw = 55 * frequencyDominance + 20 * subredditBonus + 15 * negativeIntensity + 10 * confidence;
   return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
+export interface RankableAggregate {
+  aspect: string;
+  count: number;
+  weighted_count?: number;
+  thread_count?: number;
+}
+
+/**
+ * Milestone 3 / A3 deterministic tiebreak — mirrors backend/app/
+ * react_agent.py's _build_report_inputs() sort key EXACTLY:
+ * weighted_count desc -> thread_count desc -> raw count desc -> label asc.
+ * Used whenever priorityScore() lands two groups on the same score (common —
+ * see the real run_55025c50e81b replay, where most of the top pain-point
+ * categories tie at the same dampened score), so the frontend "roadmap"
+ * ordering can never silently diverge from the backend's bar-chart/narrative
+ * ordering for groups of the same type. This is the one piece of logic
+ * intentionally duplicated across languages (the dampening math itself is
+ * not) — see insights.test.ts's consistency test for the empirical proof
+ * both sides agree.
+ */
+export function compareByThreadDampenedRank(a: RankableAggregate, b: RankableAggregate): number {
+  const weightedA = a.weighted_count ?? a.count;
+  const weightedB = b.weighted_count ?? b.count;
+  if (weightedA !== weightedB) return weightedB - weightedA;
+  const threadsA = a.thread_count ?? 1;
+  const threadsB = b.thread_count ?? 1;
+  if (threadsA !== threadsB) return threadsB - threadsA;
+  if (a.count !== b.count) return b.count - a.count;
+  return a.aspect.localeCompare(b.aspect);
 }
