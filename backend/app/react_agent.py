@@ -17,6 +17,7 @@ from .models import (
     Claim,
     ClaimType,
     CollectedItem,
+    DataSource,
     Evidence,
     InsightType,
     Report,
@@ -28,6 +29,7 @@ from .models import (
 )
 from .pipeline.claims import enable_claim_extraction, extract_claims
 from .pipeline.screening import ScreeningResult, screen_item
+from .pipeline.source_profiles import SourceProfile, get_source_profile
 from .pipeline.taxonomy import CategorizationStats, categorize_claims, enable_claim_categorization
 from .storage import Storage
 
@@ -200,7 +202,15 @@ def run_react_loop(
                 return
 
             thought = plan_next_query(
-                run.product_category, run.keywords, run.target_subreddits, tried_queries, collected, iteration, missing_aspects, llm
+                run.product_category,
+                run.keywords,
+                run.target_subreddits,
+                tried_queries,
+                collected,
+                iteration,
+                missing_aspects,
+                llm,
+                run.data_source,
             )
             trace(iteration, StepType.THOUGHT, thought["reasoning"], {"query": thought["query"], "subreddit": thought["subreddit"]})
 
@@ -313,7 +323,14 @@ def run_react_loop(
             storage.update_run_progress(run_id, iteration, len(collected), RunStatus.SEARCHING)
 
             verdict = check_sufficiency(
-                run.product_category, collected, iteration, run.max_iterations, run.min_evidence_target, new_counts, llm
+                run.product_category,
+                collected,
+                iteration,
+                run.max_iterations,
+                run.min_evidence_target,
+                new_counts,
+                llm,
+                run.data_source,
             )
             missing_aspects = verdict.get("missing_aspects", [])
             trace(
@@ -403,13 +420,53 @@ def plan_next_query(
     iteration: int,
     missing_aspects: list[str],
     llm: DeepSeekClient,
+    data_source: DataSource,
 ) -> dict[str, str]:
     if llm.available():
         try:
-            return _plan_next_query_llm(product_category, keywords, target_subreddits, tried_queries, collected, iteration, missing_aspects, llm)
+            return _plan_next_query_llm(
+                product_category, keywords, target_subreddits, tried_queries, collected, iteration, missing_aspects, llm, data_source
+            )
         except Exception:
             pass
     return _plan_next_query_fallback(product_category, keywords, target_subreddits, tried_queries, iteration, missing_aspects)
+
+
+def _planner_subreddit_field_description(profile: SourceProfile, target_subreddits: list[str]) -> str:
+    """Milestone 4 / D2: the `expected_json.subreddit` guidance text the LLM
+    reads, source-aware per SourceProfile.grouping_mode. Reddit's own wording
+    is left byte-for-byte identical to the pre-Milestone-4 text (see
+    test_search_planner.py's Reddit-regression test) -- only non-Reddit
+    sources get new phrasing here."""
+    if profile.grouping_mode == "always":
+        return "optional subreddit without r/ prefix, empty string to search all of Reddit"
+    if profile.grouping_mode == "never":
+        return f"leave this empty -- {profile.display_noun} has no subreddit or category concept to narrow by"
+    # "if_supplied" (JSON upload): only offer narrowing when the run actually
+    # supplied target groups; never invite the LLM to invent one otherwise.
+    if target_subreddits:
+        options = ", ".join(target_subreddits)
+        return f"optional {profile.grouping_label}, chosen only from the supplied options ({options}); empty string to search the whole dataset"
+    return f"leave this empty -- no target {profile.grouping_label} was supplied for this dataset, do not invent one"
+
+
+def _sanitize_planner_subreddit(raw: str, profile: SourceProfile, target_subreddits: list[str]) -> str:
+    """Enforces SourceProfile.grouping_mode even if the LLM doesn't follow the
+    prompt's instructions -- a static, deterministic guard (not adaptive
+    behavior): "never" sources can never leak a value the collector would
+    ignore anyway, and "if_supplied" sources can never leak an invented
+    category the JSON-upload collector would then filter everything out
+    against (json_upload.py's search() does an exact, case-insensitive match
+    -- an invented value silently returns zero items instead of erroring)."""
+    value = raw.strip()
+    if profile.grouping_mode == "never":
+        return ""
+    if profile.grouping_mode == "if_supplied":
+        allowed = {item.strip().lower() for item in target_subreddits}
+        if not value or value.lower() not in allowed:
+            return ""
+        return value
+    return value  # "always" (Reddit): unrestricted, matches pre-Milestone-4 behavior
 
 
 def _plan_next_query_llm(
@@ -421,12 +478,15 @@ def _plan_next_query_llm(
     iteration: int,
     missing_aspects: list[str],
     llm: DeepSeekClient,
+    data_source: DataSource,
 ) -> dict[str, str]:
+    profile = get_source_profile(data_source)
     system = (
-        "You are a search-planning agent inside a Reddit product-feedback research tool for merchants. "
-        "Decide the single best next Reddit search query to surface real user opinions (complaints, feature "
-        "requests, comparisons, praise) about the given product category. Avoid repeating previous queries. "
-        "If missing aspects are given, target them. Write the reasoning field in English. Return only JSON."
+        f"You are a search-planning agent inside a product-feedback research tool for merchants, focused on "
+        f"{profile.display_noun}. Decide the single best next search query to surface real user opinions "
+        "(complaints, feature requests, comparisons, praise) about the given product category. Avoid repeating "
+        "previous queries. If missing aspects are given, target them. Write the reasoning field in English. "
+        "Return only JSON."
     )
     user = json.dumps(
         {
@@ -439,8 +499,8 @@ def _plan_next_query_llm(
             "aspects_covered": sorted({item.aspect for item in collected if item.aspect}),
             "missing_aspects_to_target": missing_aspects,
             "expected_json": {
-                "query": "a specific Reddit search query in English",
-                "subreddit": "optional subreddit without r/ prefix, empty string to search all of Reddit",
+                "query": f"a specific search query for {profile.display_noun}, in English",
+                "subreddit": _planner_subreddit_field_description(profile, target_subreddits),
                 "reasoning": "a short explanation in English of why this search was chosen",
             },
         },
@@ -452,7 +512,7 @@ def _plan_next_query_llm(
         raise ValueError("planner returned an empty query")
     return {
         "query": query,
-        "subreddit": str(parsed.get("subreddit") or "").strip(),
+        "subreddit": _sanitize_planner_subreddit(str(parsed.get("subreddit") or ""), profile, target_subreddits),
         "reasoning": str(parsed.get("reasoning") or "AI planned the next search step."),
     }
 
@@ -543,6 +603,7 @@ def check_sufficiency(
     min_evidence_target: int,
     new_counts: list[int],
     llm: DeepSeekClient,
+    data_source: DataSource,
 ) -> dict[str, Any]:
     if iteration >= max_iterations:
         return {"sufficient": True, "reason": "Reached the maximum iteration cap; moving to the summary stage.", "missing_aspects": []}
@@ -563,7 +624,7 @@ def check_sufficiency(
 
     if llm.available():
         try:
-            return _check_sufficiency_llm(product_category, collected, iteration, max_iterations, min_evidence_target, llm)
+            return _check_sufficiency_llm(product_category, collected, iteration, max_iterations, min_evidence_target, llm, data_source)
         except Exception:
             pass
     return _check_sufficiency_fallback(collected, min_evidence_target)
@@ -576,15 +637,26 @@ def _check_sufficiency_llm(
     max_iterations: int,
     min_evidence_target: int,
     llm: DeepSeekClient,
+    data_source: DataSource,
 ) -> dict[str, Any]:
+    profile = get_source_profile(data_source)
+    # Milestone 4 / D2: the observed-diversity dimension is real for every
+    # source (subreddit_counts below is computed the same way regardless of
+    # data_source -- CollectedItem.subreddit is documented as a source-agnostic
+    # grouping label, see models.py), only its user-facing NAME is source-
+    # specific: "subreddit" (Reddit), "product" (Amazon), "video" (YouTube),
+    # "category" (JSON upload) -- see SourceProfile.grouping_label. The "or
+    # 'source'" is a defensive fallback only, never expected to trigger for a
+    # currently-listed DataSource.
+    diversity_noun = profile.grouping_label or "source"
     aspect_counts = Counter(item.aspect for item in collected)
     subreddit_counts = Counter(item.subreddit for item in collected)
     system = (
-        "You are the sufficiency-judging step of a Reddit product-feedback ReAct agent. Decide whether the "
-        "evidence collected so far is broad and deep enough to write a solid, actionable merchant report, or "
-        "whether the agent should keep searching. Consider evidence volume, subreddit diversity, and aspect "
-        "coverage (are pain points concentrated on very few aspects, suggesting more digging would surface more "
-        "useful angles?). Write reason and missing_aspects in English. Return only JSON."
+        f"You are the sufficiency-judging step of a product-feedback ReAct agent focused on {profile.display_noun}. "
+        "Decide whether the evidence collected so far is broad and deep enough to write a solid, actionable "
+        f"merchant report, or whether the agent should keep searching. Consider evidence volume, {diversity_noun} "
+        "diversity, and aspect coverage (are pain points concentrated on very few aspects, suggesting more "
+        "digging would surface more useful angles?). Write reason and missing_aspects in English. Return only JSON."
     )
     user = json.dumps(
         {
